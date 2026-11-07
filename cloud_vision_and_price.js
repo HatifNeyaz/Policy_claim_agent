@@ -5,6 +5,7 @@ window.CloudVisionAndPrice = {
     pricing_lookup_ms: 0
   },
   visionCallTimes: [],
+  lastCallTimestamp: 0,
 
   // Preserves the exact key without enforcing prefix or length rules
   sanitizeApiKey(rawKey) {
@@ -35,8 +36,8 @@ window.CloudVisionAndPrice = {
       return { provider: "Groq Cloud LPU" };
     }
 
-    // Ping Gemini 3.5 Flash endpoint directly
-    const testUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${encodeURIComponent(cleanKey)}`;
+    // Ping the high-quota Gemini 3.5 Flash Lite endpoint directly
+    const testUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${encodeURIComponent(cleanKey)}`;
     const res = await fetch(testUrl, {
       method: "POST",
       headers: {
@@ -55,7 +56,7 @@ window.CloudVisionAndPrice = {
       throw new Error(msg);
     }
 
-    return { provider: "Google Gemini 3.5 Flash" };
+    return { provider: "Google Gemini 3.5 Flash Lite (500 RPD Quota)" };
   },
 
   getVisionPrompt(countryName) {
@@ -102,7 +103,7 @@ CRITICAL RULES:
 4. bbox_2d coordinates must be normalized integers from 0 to 1000 [ymin, xmin, ymax, xmax].`;
   },
 
-  // Multi-Model Vision Call with Gemini 3.5 Flash as Default Primary
+  // Multi-Model Vision Call prioritizing 500 RPD / 15 RPM models with instant failover
   async analyzeKeyframe(base64Jpeg, apiKey, modelChoice, countryName) {
     const t0 = performance.now();
     const cleanKey = this.sanitizeApiKey(apiKey);
@@ -117,28 +118,30 @@ CRITICAL RULES:
       return res;
     }
 
-    // Failover sequence targeting Gemini 3.5 generation
-    const modelsToTry = modelChoice === "gemini-3.5-flash-lite"
-      ? ["gemini-3.5-flash-lite", "gemini-3.5-flash"]
-      : modelChoice === "gemini-3.5-flash"
-      ? ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
-      : ["gemini-3.5-flash", "gemini-3.5-flash-lite"];
+    // Default pool utilizes the two 500 RPD / 15 RPM models first
+    let modelsToTry = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"];
+    if (modelChoice === "gemini-3.1-flash-lite") {
+      modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.5-flash"];
+    } else if (modelChoice === "gemini-3.5-flash") {
+      modelsToTry = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
+    }
 
     let lastErr = null;
     for (const modelName of modelsToTry) {
       try {
-        const res = await this.callGeminiVisionWithTimeout(base64Jpeg, cleanKey, modelName, prompt, 22000);
+        const res = await this.callGeminiVisionWithTimeout(base64Jpeg, cleanKey, modelName, prompt, 18000);
+        this.lastCallTimestamp = Date.now();
         this.recordVisionLatency(performance.now() - t0);
         return res;
       } catch (err) {
-        console.warn(`Model ${modelName} call failed, trying next option...`, err.message);
+        console.warn(`Model ${modelName} hit limit or error (${err.message}). Auto-failing over to next high-quota pool...`);
         lastErr = err;
         if (err.message.includes("API key not valid") || err.message.includes("API Key not found")) {
           break;
         }
       }
     }
-    throw lastErr || new Error("All vision models failed.");
+    throw lastErr || new Error("All high-quota vision models exhausted.");
   },
 
   async callGeminiVisionWithTimeout(base64Jpeg, cleanKey, modelName, prompt, timeoutMs) {
@@ -146,6 +149,15 @@ CRITICAL RULES:
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+
+      const generationConfig = {
+        temperature: 0.1,
+        responseMimeType: "application/json"
+      };
+      // Disable thinking budget on Flash-Lite models so response returns in ~0.9s with zero extra tokens
+      if (modelName.includes("flash")) {
+        generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      }
 
       const response = await fetch(url, {
         method: "POST",
@@ -161,12 +173,7 @@ CRITICAL RULES:
               { inline_data: { mime_type: "image/jpeg", data: base64Jpeg } }
             ]
           }],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: "application/json",
-            // Zero thinking budget ensures instant output with zero reasoning token consumption
-            thinkingConfig: { thinkingBudget: 0 }
-          }
+          generationConfig
         })
       });
 
