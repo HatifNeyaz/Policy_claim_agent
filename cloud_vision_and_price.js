@@ -6,6 +6,67 @@ window.CloudVisionAndPrice = {
   },
   visionCallTimes: [],
 
+  // Strictly cleans copy-pasted API keys (removes quotes, GEMINI_API_KEY= prefix, spaces, and invisible characters)
+  sanitizeApiKey(rawKey) {
+    if (!rawKey) return "";
+    let cleaned = String(rawKey).trim();
+    // If user pasted "GEMINI_API_KEY=AIza..." or "export GEMINI_API_KEY=...", extract after '='
+    if (cleaned.includes("=")) {
+      cleaned = cleaned.split("=").pop().trim();
+    }
+    // Extract exact AIza... (Google, 39 chars) or gsk_... (Groq) token if surrounded by accidental text
+    const googleMatch = cleaned.match(/AIza[0-9A-Za-z\-_]{30,45}/);
+    if (googleMatch) return googleMatch[0];
+    const groqMatch = cleaned.match(/gsk_[0-9A-Za-z\-_]{20,80}/);
+    if (groqMatch) return groqMatch[0];
+    // Otherwise strip all non-ASCII/whitespace/quote characters
+    return cleaned.replace(/[^0-9A-Za-z\-_]/g, "");
+  },
+
+  // Quick 1-second diagnostic test to verify if the API key is valid and active
+  async testApiKeyConnection(rawKey, modelChoice) {
+    const cleanKey = this.sanitizeApiKey(rawKey);
+    if (!cleanKey) {
+      throw new Error("Key box is empty or contains no valid alphanumeric characters.");
+    }
+
+    if (cleanKey.startsWith("gsk_") || modelChoice === "groq-llama4") {
+      const res = await fetch("https://api.groq.com/openai/v1/models", {
+        headers: { "Authorization": `Bearer ${cleanKey}` }
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(`Groq Key Error (${res.status}): ${err?.error?.message || "Invalid Groq key"}`);
+      }
+      return { provider: "Groq Cloud LPU", keyPreview: `${cleanKey.slice(0, 7)}...${cleanKey.slice(-4)}`, length: cleanKey.length };
+    }
+
+    if (!cleanKey.startsWith("AIza")) {
+      throw new Error(`Key starts with "${cleanKey.slice(0, 4)}..." instead of "AIza" (length: ${cleanKey.length}). Make sure you copied the API key from aistudio.google.com/apikey and not the Project ID.`);
+    }
+
+    // Test against Gemini models list endpoint using both header and query param
+    const testUrl = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=5&key=${encodeURIComponent(cleanKey)}`;
+    const res = await fetch(testUrl, {
+      method: "GET",
+      headers: {
+        "x-goog-api-key": cleanKey
+      }
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      const msg = errData?.error?.message || `HTTP ${res.status}`;
+      throw new Error(`${msg} [Sent key: ${cleanKey.slice(0, 6)}...${cleanKey.slice(-4)}, len=${cleanKey.length}]. Fix: In Google AI Studio, click 'Create API key' -> 'Create API key in new project'.`);
+    }
+
+    return {
+      provider: "Google Gemini API",
+      keyPreview: `${cleanKey.slice(0, 6)}...${cleanKey.slice(-4)}`,
+      length: cleanKey.length
+    };
+  },
+
   // Master prompt instructing strict anti-hallucination rules and complete room + spine detection
   getVisionPrompt(countryName) {
     return `You are a precision insurance contents inventory vision system operating in ${countryName}.
@@ -54,7 +115,10 @@ CRITICAL RULES:
   // Automatic Multi-Model Vision Call with Failover & Zero-Thinking-Delay Config
   async analyzeKeyframe(base64Jpeg, apiKey, modelChoice, countryName) {
     const t0 = performance.now();
-    const cleanKey = (apiKey || "").trim();
+    const cleanKey = this.sanitizeApiKey(apiKey);
+    if (!cleanKey) {
+      throw new Error("API key is empty. Please paste your key in the top bar.");
+    }
     const prompt = this.getVisionPrompt(countryName);
 
     // If key starts with gsk_ or user selected Groq, route to Groq Llama-4-Scout Vision
@@ -80,18 +144,22 @@ CRITICAL RULES:
       } catch (err) {
         console.warn(`Model ${modelName} failed or timed out, failing over...`, err.message);
         lastErr = err;
+        // If the API key itself is rejected as invalid, don't retry 3 times with the same bad key
+        if (err.message.includes("API key not valid") || err.message.includes("API Key not found")) {
+          break;
+        }
       }
     }
     throw lastErr || new Error("All vision models failed.");
   },
 
-  async callGeminiVisionWithTimeout(base64Jpeg, apiKey, modelName, prompt, timeoutMs) {
+  async callGeminiVisionWithTimeout(base64Jpeg, cleanKey, modelName, prompt, timeoutMs) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      // Pass key in BOTH query string and x-goog-api-key header so browser extensions cannot strip it
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
 
-      // Disable dynamic thinking budget on gemini-2.5-flash so vision JSON returns in ~1.8s instead of timing out
       const generationConfig = {
         temperature: 0.1,
         responseMimeType: "application/json"
@@ -102,7 +170,10 @@ CRITICAL RULES:
 
       const response = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": cleanKey
+        },
         signal: controller.signal,
         body: JSON.stringify({
           contents: [{
@@ -121,12 +192,11 @@ CRITICAL RULES:
           const errJson = await response.json();
           errDetail = errJson?.error?.message || "";
         } catch (e) {}
-        throw new Error(`HTTP ${response.status} on ${modelName}${errDetail ? ": " + errDetail : ""}`);
+        throw new Error(`HTTP ${response.status} on ${modelName}${errDetail ? ": " + errDetail : ""} (Key: ${cleanKey.slice(0, 6)}... len=${cleanKey.length})`);
       }
 
       const data = await response.json();
       const parts = data?.candidates?.[0]?.content?.parts || [];
-      // Filter out internal thought blocks if present and concatenate text parts
       const rawText = parts
         .filter(p => !p.thought && typeof p.text === "string")
         .map(p => p.text)
@@ -176,7 +246,6 @@ CRITICAL RULES:
     const uniqueBooks = [];
 
     for (const b of rawBooks) {
-      // Enforce anti-guessing rule: low confidence becomes unidentified
       if (b.status === "identified" && (!b.title || b.id_confidence < 0.62)) {
         b.status = "unidentified";
         b.title = "";

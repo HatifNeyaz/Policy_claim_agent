@@ -20,14 +20,53 @@
   let roomEstimate = { length_m: 4.2, width_m: 3.5, height_m: 2.44, shape_note: "rectangular" };
   let finalPacket = null;
 
-  // Auto-fill API key if ?key= is in URL or saved in localStorage
+  // Auto-fill and sanitize API key if ?key= is in URL or saved in localStorage
   const urlParams = new URLSearchParams(window.location.search);
   const apiKeyInput = document.getElementById("apiKeyInput");
   if (apiKeyInput) {
-    const savedKey = urlParams.get("key") || localStorage.getItem("CLAIM_AGENT_API_KEY") || "";
-    if (savedKey) apiKeyInput.value = savedKey;
-    apiKeyInput.addEventListener("input", () => {
-      localStorage.setItem("CLAIM_AGENT_API_KEY", apiKeyInput.value.trim());
+    const rawSavedKey = urlParams.get("key") || localStorage.getItem("CLAIM_AGENT_API_KEY") || "";
+    const cleanSaved = window.CloudVisionAndPrice
+      ? window.CloudVisionAndPrice.sanitizeApiKey(rawSavedKey)
+      : rawSavedKey.trim();
+    if (cleanSaved) apiKeyInput.value = cleanSaved;
+
+    apiKeyInput.addEventListener("change", () => {
+      const sanitized = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
+      apiKeyInput.value = sanitized;
+      localStorage.setItem("CLAIM_AGENT_API_KEY", sanitized);
+    });
+  }
+
+  // Show/Hide API Key button
+  const toggleKeyVisBtn = document.getElementById("toggleKeyVisBtn");
+  if (toggleKeyVisBtn && apiKeyInput) {
+    toggleKeyVisBtn.addEventListener("click", () => {
+      apiKeyInput.type = apiKeyInput.type === "password" ? "text" : "password";
+    });
+  }
+
+  // 1-Click Test API Key button
+  const testApiKeyBtn = document.getElementById("testApiKeyBtn");
+  if (testApiKeyBtn && apiKeyInput) {
+    testApiKeyBtn.addEventListener("click", async () => {
+      const sanitized = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
+      apiKeyInput.value = sanitized;
+      localStorage.setItem("CLAIM_AGENT_API_KEY", sanitized);
+
+      const speechEl = document.getElementById("agentSpeechText");
+      const modelChoice = document.getElementById("modelSelect").value;
+      if (speechEl) speechEl.textContent = "🔌 Testing API key connection...";
+
+      try {
+        const info = await window.CloudVisionAndPrice.testApiKeyConnection(sanitized, modelChoice);
+        const msg = `✅ API Key Verified! Connected to ${info.provider} (${info.keyPreview}, length ${info.length}). Ready to start sweep.`;
+        if (speechEl) speechEl.textContent = msg;
+        alert(msg);
+      } catch (err) {
+        const errMsg = `❌ API Key Test Failed: ${err.message}`;
+        if (speechEl) speechEl.textContent = errMsg;
+        alert(errMsg);
+      }
     });
   }
 
@@ -177,7 +216,8 @@
 
   // Start Live Camera Sweep
   document.getElementById("startSweepBtn").addEventListener("click", async () => {
-    const apiKey = apiKeyInput.value.trim();
+    const apiKey = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
+    apiKeyInput.value = apiKey;
     if (!apiKey) {
       alert("Please paste your free Gemini (AIza...) or Groq (gsk_...) API key first.");
       return;
@@ -206,7 +246,8 @@
   document.getElementById("videoUploadInput").addEventListener("change", async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const apiKey = apiKeyInput.value.trim();
+    const apiKey = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
+    apiKeyInput.value = apiKey;
     if (!apiKey) {
       alert("Please paste your API key first.");
       return;
@@ -355,7 +396,7 @@
     renderFramesGrid();
     document.getElementById("liveFrameCount").textContent = savedFrames.length;
 
-    const apiKey = apiKeyInput.value.trim();
+    const apiKey = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
     const modelChoice = document.getElementById("modelSelect").value;
     const [countryCode] = document.getElementById("localeSelect").value.split("|");
 
@@ -371,12 +412,10 @@
       const rawBooks = result.books || [];
       const rawItems = result.items || [];
 
-      // Feed Gemini bounding boxes back to EdgeSegmentation so they render on the live canvas
       if (window.EdgeSegmentation) {
         window.EdgeSegmentation.updateCloudBoxes(rawBooks, rawItems);
       }
 
-      // Compute median spine pixel height in this frame for metric scale calibration
       const pxHeights = rawBooks
         .map(b => b.bbox_2d ? ((b.bbox_2d[2] - b.bbox_2d[0]) / 1000) * captureCanvas.height : 280)
         .filter(h => h > 40)
@@ -432,7 +471,7 @@
     } catch (err) {
       console.error("Keyframe analysis error:", err);
       if (speechEl) {
-        speechEl.textContent = `⚠️ Vision API Warning on ${filename}: ${err.message}. Check API key or switch Vision Engine dropdown.`;
+        speechEl.textContent = `⚠️ Vision API Warning on ${filename}: ${err.message}`;
       }
     } finally {
       isAnalyzingCloud = false;

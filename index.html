@@ -19,7 +19,11 @@
     <div class="config-grid">
       <div class="input-group">
         <label for="apiKeyInput">API Key (Gemini <code>AIza..</code> or Groq <code>gsk_..</code>)</label>
-        <input type="password" id="apiKeyInput" placeholder="Paste single API key here..." autocomplete="off" />
+        <div class="dual-num">
+          <input type="password" id="apiKeyInput" placeholder="Paste AIza... or gsk_... key" autocomplete="off" spellcheck="false" />
+          <button type="button" id="toggleKeyVisBtn" class="btn-secondary btn-sm" title="Show or Hide API Key">👁️</button>
+          <button type="button" id="testApiKeyBtn" class="btn-secondary btn-sm" title="Verify API Key with Cloud">🔌 Test</button>
+        </div>
       </div>
 
       <div class="input-group">
@@ -63,7 +67,7 @@
       </div>
 
       <div class="input-group actions-right">
-        <button id="clearCacheBtn" class="btn-secondary btn-sm" title="Deletes downloaded WASM/TFLite models and browser storage">
+        <button type="button" id="clearCacheBtn" class="btn-secondary btn-sm" title="Deletes downloaded WASM/TFLite models and browser storage">
           🗑️ Clear Model & Cache
         </button>
       </div>
@@ -91,7 +95,7 @@
       <div class="voice-panel">
         <div class="voice-line">
           <strong>🤖 Agent:</strong>
-          <span id="agentSpeechText">Paste your API key and tap "Start Live Camera Sweep" or upload a sweep video.</span>
+          <span id="agentSpeechText">Paste your API key, click "🔌 Test", and tap "Start Live Camera Sweep" or upload a sweep video.</span>
         </div>
         <div class="voice-line user-line">
           <strong>🎙️ You:</strong>
