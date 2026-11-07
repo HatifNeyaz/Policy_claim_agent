@@ -63,8 +63,9 @@
       </div>
 
       <div class="input-group">
-        <label for="shelfRefCm">Ref Shelf Width (cm) / Ceiling (m)</label>
+        <label for="pixelThresholdInput">Unique Photo Pixel Threshold (%)</label>
         <div class="dual-num">
+          <input type="number" id="pixelThresholdInput" value="18" min="10" max="40" step="1" title="Minimum % of pixels that must change before snapping a new photo (18% is optimum)" />
           <input type="number" id="shelfRefCm" value="80" min="30" max="300" title="Standard shelf width in cm" />
           <input type="number" id="ceilingRefM" value="2.44" step="0.05" min="2.0" max="5.0" title="Ceiling height in meters" />
         </div>
@@ -82,60 +83,71 @@
   <main class="workspace no-print">
     <!-- LEFT / TOP: CAMERA & ON-DEVICE SEGMENTATION VIEWPORT -->
     <section class="viewport-card">
+      <!-- SMALL INTRO FOR MARKING SCHEME -->
+      <div class="marking-intro-box">
+        <strong>📌 How Live Marking Works:</strong>
+        <span>
+          <strong>1. Auto-Included by Default:</strong> Everything the camera sees is <strong>automatically counted as yours</strong> (you don't need to say anything for normal shelves or furniture).
+          <strong>2. Unique Photo Guard:</strong> The camera only snaps when <strong>≥18% of pixels change</strong> (every ~4s), so slow panning never takes duplicate photos.
+          <strong>3. Optional Overrides:</strong> While viewing an item, speak or tap below to mark it as <em>"Not Mine"</em>, <em>"Art is a Print"</em>, or <em>"1st Edition"</em>.
+        </span>
+      </div>
+
       <div class="hud-bar">
         <span id="sweepTimer" class="hud-pill">⏱️ 00:00</span>
+        <span id="pixelDiffBadge" class="hud-pill">🔄 Pixel Change: 0% (Need ≥18%)</span>
         <span id="sharpnessBadge" class="hud-pill">🎯 Sharpness: --</span>
-        <span id="motionBadge" class="hud-pill">🧭 Pan Speed: 0 cm/s</span>
+        <span id="motionBadge" class="hud-pill">🧭 Pan: 0 cm/s</span>
         <span id="queueBadge" class="hud-pill">☁️ Cloud Queue: 0</span>
         <span id="modelBadge" class="hud-pill">🧠 Edge AI: Ready</span>
       </div>
 
-      <!-- UNMISTAKABLE TRAFFIC-LIGHT USER ACTION BAR (HOLD vs MOVE NOW) -->
+      <!-- TRAFFIC-LIGHT USER ACTION BAR (HOLD vs MOVE NOW) -->
       <div class="pacing-panel">
         <div id="moveTrafficBanner" class="traffic-banner waiting">
-          ⏸️ Tap "Start Live Camera Sweep" — Pause ~1 sec on each item/shelf to auto-snap
+          ⏸️ Tap "Start Live Camera Sweep" — Pan smoothly; camera only snaps when view changes by ≥18%
         </div>
         <div class="pacing-row">
-          <span id="panGuideText">📏 <strong>Batch Mode Active:</strong> Snaps views locally in 0.4s & batches up to 3 frames per API call!</span>
-          <span id="captureStateBadge" class="capture-badge idle">0 Frames Snapped</span>
+          <span id="panGuideText">📏 <strong>Synced Capture:</strong> Min 4.0s between snaps + ≥18% pixel change guard prevents duplicate frames</span>
+          <span id="captureStateBadge" class="capture-badge idle">0 Unique Frames</span>
         </div>
-        <div class="progress-track" title="Scene novelty & stability progress for instant local capture">
+        <div class="progress-track" title="Pixel change progress toward next unique photo capture">
           <div id="captureProgressBar" class="progress-fill" style="width: 0%;"></div>
         </div>
       </div>
 
+      <!-- LARGER, UNOBSTRUCTED CAMERA VIEWPORT -->
       <div class="video-container" id="videoContainer">
         <video id="cameraVideo" playsinline muted></video>
         <canvas id="overlayCanvas"></canvas>
         <div id="whiteScreenFlash" class="white-screen-flash hidden"></div>
-        <div id="shutterFlash" class="shutter-flash hidden">📸 FRAME CAPTURED! YOU CAN MOVE ON</div>
-        <div id="alertBanner" class="alert-banner hidden">⚠️ Hold steady for a split second so camera can snap this view!</div>
+        <div id="shutterFlash" class="shutter-flash hidden">📸 UNIQUE FRAME CAPTURED!</div>
+        <div id="alertBanner" class="alert-banner hidden">⚠️ Slow down slightly so the camera can lock focus!</div>
+      </div>
 
-        <!-- LIVE CAPTURED FILMSTRIP MEMORY OVERLAY (Bottom of Camera View) -->
-        <div class="live-filmstrip-bar">
-          <div class="filmstrip-header">
-            <span>🎞️ <strong>Captured Memory Strip</strong> (Click any frame to toggle 🚫 Not Mine):</span>
-            <span id="filmstripHint">No frames snapped yet</span>
-          </div>
-          <div id="liveFilmstrip" class="filmstrip-scroll"></div>
+      <!-- CAPTURED FILMSTRIP MEMORY BAR (Placed cleanly below the camera so it never blocks the view) -->
+      <div class="live-filmstrip-bar">
+        <div class="filmstrip-header">
+          <span>🎞️ <strong>Unique Captured Frames</strong> (All auto-marked as <strong>✅ Yours</strong> — Click any frame to toggle <strong>🚫 Not Mine</strong>):</span>
+          <span id="filmstripHint">0 frames snapped</span>
         </div>
+        <div id="liveFilmstrip" class="filmstrip-scroll"></div>
       </div>
 
       <!-- VOICE BANNER & FRAME-BOUND TAGGING -->
       <div class="voice-panel">
         <div class="voice-line">
           <strong>🤖 Agent:</strong>
-          <span id="agentSpeechText">Paste your API key and tap "Start Live Camera Sweep". Pause briefly on each area (table, bed, shelf, wall) to hear the shutter click, then move on!</span>
+          <span id="agentSpeechText">Ready. Everything captured is automatically counted as yours unless you mark it otherwise.</span>
         </div>
         <div class="voice-line user-line">
-          <strong>🎙️ Live Frame Tagging:</strong>
-          <span id="userSpeechText">Speak or tap a tag below to attach to the current frame...</span>
+          <strong>🎙️ Live Override Tagging:</strong>
+          <span id="userSpeechText">Optional: Speak or tap a button below to tag the current frame...</span>
         </div>
-        <!-- Quick voice-equivalent buttons bound to the current active frame -->
         <div class="quick-voice-btns">
-          <button type="button" class="chip-btn danger-chip" data-voice="This shelf or area is not mine, exclude this frame">🚫 "Not Mine / Exclude Current Frame"</button>
-          <button type="button" class="chip-btn" data-voice="That artwork in this frame is a print">🖼️ "Current Art is a Print"</button>
-          <button type="button" class="chip-btn" data-voice="That artwork in this frame is an original">🎨 "Current Art is Original"</button>
+          <button type="button" class="chip-btn danger-chip" data-voice="This shelf or area is not mine, exclude this frame">🚫 "Not Mine / Exclude Frame"</button>
+          <button type="button" class="chip-btn" data-voice="That artwork in this frame is a print">🖼️ "Art is a Print"</button>
+          <button type="button" class="chip-btn" data-voice="That artwork in this frame is an original">🎨 "Art is Original"</button>
           <button type="button" class="chip-btn" data-voice="That book in this frame is a signed first edition">⭐ "Signed 1st Edition"</button>
         </div>
       </div>
@@ -148,7 +160,7 @@
           <input type="file" id="videoUploadInput" accept="video/*" hidden />
         </label>
         <button type="button" id="captureKeyframeBtn" class="btn-secondary" disabled>📸 Force Snap Now</button>
-        <button type="button" id="finishSweepBtn" class="btn-danger" disabled>⏹️ Finish & Review Q&A</button>
+        <button type="button" id="finishSweepBtn" class="btn-danger" disabled>⏹️ Finish & Generate Final Report</button>
       </div>
     </section>
 
@@ -169,19 +181,19 @@
         </div>
         <div class="kpi-box">
           <span class="kpi-val" id="liveFrameCount">0</span>
-          <span class="kpi-lbl">Frames Snapped</span>
+          <span class="kpi-lbl">Unique Frames</span>
         </div>
       </div>
 
       <div class="drawer-tabs">
         <button type="button" class="tab-btn active" data-tab="booksTab">📚 Books (<span id="tabBookCount">0</span>)</button>
         <button type="button" class="tab-btn" data-tab="itemsTab">🪑 Room Items (<span id="tabItemCount">0</span>)</button>
-        <button type="button" class="tab-btn" data-tab="framesTab">🖼️ All Frames (<span id="tabFrameCount">0</span>)</button>
+        <button type="button" class="tab-btn" data-tab="framesTab">🖼️ Frames (<span id="tabFrameCount">0</span>)</button>
       </div>
 
       <div id="booksTab" class="tab-content active">
         <div id="liveBooksList" class="live-list">
-          <p class="empty-hint">Books will appear here as batched frames finish cloud OCR...</p>
+          <p class="empty-hint">Books will appear here live as unique frames are scanned...</p>
         </div>
       </div>
 
@@ -196,30 +208,6 @@
       </div>
     </section>
   </main>
-
-  <!-- PRE-REPORT INTERACTIVE VISUAL Q&A & FRAME AUDIT SESSION (Solves Confusion Over Which Picture AI Means) -->
-  <section id="qaReviewSection" class="qa-review-section hidden no-print">
-    <div class="qa-card">
-      <div class="qa-header">
-        <div>
-          <h2>🧐 Pre-Report Visual Q&A & Frame Verification</h2>
-          <p>Review any uncertain items (framed pictures, rare books) with their exact photo below, and uncheck any frame/shelf that is not yours before pricing.</p>
-        </div>
-        <button type="button" id="confirmQaAndGenerateBtn" class="btn-primary btn-lg">
-          ✅ Confirm All & Generate Final Claim Report
-        </button>
-      </div>
-
-      <!-- Visual Question Cards (Shows exact frame + highlighted bounding box + 1-click or voice answers) -->
-      <div id="qaQuestionsContainer" class="qa-questions-grid"></div>
-
-      <!-- Full Captured Frame Memory Audit (Toggle Include vs Exclude Not Mine) -->
-      <div class="qa-frames-audit">
-        <h3>🎞️ Captured Frames Memory Audit (Click any frame to Include ✅ or Exclude 🚫 "Not Mine")</h3>
-        <div id="qaFramesAuditGrid" class="qa-frames-grid"></div>
-      </div>
-    </div>
-  </section>
 
   <!-- POST-SWEEP FINAL CLAIM PACKET & PRINTABLE REPORT SECTION -->
   <section id="reportSection" class="report-section hidden">

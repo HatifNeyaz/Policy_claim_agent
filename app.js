@@ -2,6 +2,7 @@
   let stream = null;
   let isSweeping = false;
   let isAnalyzingCloud = false;
+  let activeCloudPromise = null;
   let sweepStartTime = 0;
   let timerInterval = null;
   let edgeInterval = null;
@@ -13,14 +14,14 @@
   let currentSharpness = 150;
   let isAgentSpeaking = false;
 
-  // Local Optical Scene Memory (Decoupled from Cloud API so zero views are missed!)
-  let lastSnappedGray = null;
-  let prevTickGray = null;
+  // 64x48 Downsampled Block Signatures of All Captured Frames (Prevents Duplicate Photos!)
+  const capturedSignatures = [];
+  let prevTickSignature = null;
   let lastLocalSnapTime = 0;
   let lastCloudCallTime = 0;
   let steadyTicksCount = 0;
 
-  // All locally captured frames + Queue waiting for batched cloud analysis
+  // All locally captured unique frames + Queue waiting for batched cloud analysis
   const savedFrames = [];
   const pendingCloudQueue = [];
   const excludedFrameRefs = new Set();
@@ -91,7 +92,6 @@
     });
   }
 
-  // Distinct two-tone camera shutter click sound so user immediately hears every snap without looking
   function playCameraShutterSound() {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -103,7 +103,7 @@
       osc1.type = "triangle";
       osc1.frequency.setValueAtTime(1200, ctx.currentTime);
       osc1.frequency.exponentialRampToValueAtTime(400, ctx.currentTime + 0.06);
-      gain1.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain1.gain.setValueAtTime(0.16, ctx.currentTime);
       gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.06);
       osc1.connect(gain1);
       gain1.connect(ctx.destination);
@@ -114,7 +114,7 @@
       const gain2 = ctx.createGain();
       osc2.type = "sine";
       osc2.frequency.setValueAtTime(1600, ctx.currentTime + 0.07);
-      gain2.gain.setValueAtTime(0.12, ctx.currentTime + 0.07);
+      gain2.gain.setValueAtTime(0.11, ctx.currentTime + 0.07);
       gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.16);
       osc2.connect(gain2);
       gain2.connect(ctx.destination);
@@ -123,8 +123,7 @@
     } catch (e) {}
   }
 
-  // Unmistakable Full-Screen Shutter Flash + Traffic Light "YOU CAN MOVE ON" Update
-  function triggerShutterVisual(frameIdx) {
+  function triggerShutterVisual(frameIdx, pixelChangePct) {
     playCameraShutterSound();
     const container = document.getElementById("videoContainer");
     const whiteFlash = document.getElementById("whiteScreenFlash");
@@ -133,20 +132,20 @@
 
     if (whiteFlash) {
       whiteFlash.classList.remove("hidden");
-      setTimeout(() => whiteFlash.classList.add("hidden"), 130);
+      setTimeout(() => whiteFlash.classList.add("hidden"), 120);
     }
     if (container) {
       container.classList.add("flash-border");
       setTimeout(() => container.classList.remove("flash-border"), 650);
     }
     if (flashBadge) {
-      flashBadge.textContent = `📸 SNAPPED FRAME #${frameIdx}! MOVE TO NEXT VIEW ➡️`;
+      flashBadge.textContent = `📸 UNIQUE FRAME #${frameIdx} SNAPPED (${pixelChangePct}% Changed)`;
       flashBadge.classList.remove("hidden");
-      setTimeout(() => flashBadge.classList.add("hidden"), 1600);
+      setTimeout(() => flashBadge.classList.add("hidden"), 1700);
     }
     if (trafficBanner) {
       trafficBanner.className = "traffic-banner snapped-move";
-      trafficBanner.textContent = `🟢 FRAME #${frameIdx} CAPTURED IN MEMORY! Pan to the next item/shelf now ➡️`;
+      trafficBanner.textContent = `🟢 UNIQUE FRAME #${frameIdx} SAVED (Auto-Marked Yours)! Pan smoothly to next area ➡️`;
     }
   }
 
@@ -169,13 +168,14 @@
     }
   });
 
-  function computeSharpnessGlareAndPanSpeed(videoEl, workCanvas, prevGray) {
+  // Computes sharpness, glare, pan speed, AND a noise-resistant 64x48 block signature for pixel-change deduplication
+  function analyzeFrameAndSignature(videoEl, workCanvas, prevSig) {
     if (!videoEl || videoEl.readyState < 2 || !workCanvas) {
-      return { sharpness: 65, sharpnessPct: 92, glarePct: 0, panCmPerSec: 0, grayBuffer: null };
+      return { sharpness: 65, sharpnessPct: 92, glarePct: 0, panCmPerSec: 0, signature: null };
     }
     const ctx = workCanvas.getContext("2d", { willReadFrequently: true });
-    const w = workCanvas.width;
-    const h = workCanvas.height;
+    const w = workCanvas.width;  // 320
+    const h = workCanvas.height; // 240
     ctx.drawImage(videoEl, 0, 0, w, h);
     const img = ctx.getImageData(0, 0, w, h).data;
 
@@ -187,11 +187,12 @@
       if (lum > 248) glarePixels++;
     }
 
+    // 1. 2D Laplacian Sharpness
     let sum = 0;
     let sumSq = 0;
     let count = 0;
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
+    for (let y = 1; y < h - 1; y += 2) {
+      for (let x = 1; x < w - 1; x += 2) {
         const idx = y * w + x;
         const lap = gray[idx - w] + gray[idx + w] + gray[idx - 1] + gray[idx + 1] - 4 * gray[idx];
         sum += lap;
@@ -204,16 +205,36 @@
     const sharpnessPct = Math.min(99, Math.round((variance / 45) * 100));
     const glarePct = (glarePixels / (w * h)) * 100;
 
-    let opticalDeltaPct = 0;
-    if (prevGray && prevGray.length === gray.length) {
-      let diff = 0;
-      for (let i = 0; i < gray.length; i += 4) {
-        diff += Math.abs(gray[i] - prevGray[i]);
+    // 2. Build 64x48 Downsampled Block Grid Signature (5x5 pixel blocks) to ignore camera sensor grain
+    const gridW = 64;
+    const gridH = 48;
+    const signature = new Float32Array(gridW * gridH);
+    for (let gy = 0; gy < gridH; gy++) {
+      for (let gx = 0; gx < gridW; gx++) {
+        let blockSum = 0;
+        const startY = gy * 5;
+        const startX = gx * 5;
+        for (let by = 0; by < 5; by++) {
+          const rowOffset = (startY + by) * w + startX;
+          for (let bx = 0; bx < 5; bx++) {
+            blockSum += gray[rowOffset + bx];
+          }
+        }
+        signature[gy * gridW + gx] = blockSum / 25;
       }
-      opticalDeltaPct = (diff / (gray.length / 4) / 255) * 100;
+    }
+
+    // 3. Measure short-term pan speed (cm/s) between consecutive 300ms ticks
+    let tickDeltaPct = 0;
+    if (prevSig && prevSig.length === signature.length) {
+      let diff = 0;
+      for (let i = 0; i < signature.length; i++) {
+        diff += Math.abs(signature[i] - prevSig[i]);
+      }
+      tickDeltaPct = (diff / signature.length / 255) * 100;
     }
     const gyroCmPerSec = gyroSpeedDegPerSec * 0.42;
-    const opticalCmPerSec = opticalDeltaPct > 1.8 ? opticalDeltaPct * 1.65 : 0;
+    const opticalCmPerSec = tickDeltaPct > 1.5 ? tickDeltaPct * 1.6 : 0;
     const panCmPerSec = Math.round(Math.max(gyroCmPerSec, opticalCmPerSec));
 
     return {
@@ -221,18 +242,37 @@
       sharpnessPct,
       glarePct: Number(glarePct.toFixed(1)),
       panCmPerSec,
-      grayBuffer: gray
+      signature
     };
   }
 
-  // Returns percentage of scene change between current view and last locally snapped frame (0 to 100)
-  function computeSceneNoveltyPct(currentGray, lastSnapped) {
-    if (!currentGray || !lastSnapped || currentGray.length !== lastSnapped.length) return 100;
-    let diffSum = 0;
-    for (let i = 0; i < currentGray.length; i += 4) {
-      diffSum += Math.abs(currentGray[i] - lastSnapped[i]);
+  // Compares current 64x48 signature against ALL previously saved photos and returns the MINIMUM pixel change %
+  // This guarantees that even if you pan slowly or revisit a previous angle, it won't snap a duplicate!
+  function computeMinPixelChangeFromSaved(currentSig) {
+    if (!currentSig || capturedSignatures.length === 0) return 100;
+    let minDiffPct = 100;
+
+    // Compare against the last 6 captured frame signatures
+    const startIdx = Math.max(0, capturedSignatures.length - 6);
+    for (let s = startIdx; s < capturedSignatures.length; s++) {
+      const savedSig = capturedSignatures[s];
+      let diffSum = 0;
+      let changedBlocks = 0;
+      for (let i = 0; i < currentSig.length; i++) {
+        const d = Math.abs(currentSig[i] - savedSig[i]);
+        diffSum += d;
+        // Count block as significantly changed if luminance shifted by > 24 levels (out of 255)
+        if (d > 24) changedBlocks++;
+      }
+      const meanIntensityDiffPct = (diffSum / currentSig.length / 255) * 100;
+      const changedAreaPct = (changedBlocks / currentSig.length) * 100;
+      // Blend area change % and intensity change % for a true human-intuitive "pixel change %"
+      const combinedDiffPct = Math.round(changedAreaPct * 0.65 + meanIntensityDiffPct * 0.9);
+      if (combinedDiffPct < minDiffPct) {
+        minDiffPct = combinedDiffPct;
+      }
     }
-    return (diffSum / (currentGray.length / 4) / 255) * 100;
+    return minDiffPct;
   }
 
   function speakAgent(text) {
@@ -241,7 +281,7 @@
     if (!("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = 1.12;
+    utter.rate = 1.1;
     utter.onstart = () => { isAgentSpeaking = true; };
     utter.onend = () => { isAgentSpeaking = false; };
     utter.onerror = () => { isAgentSpeaking = false; };
@@ -269,14 +309,14 @@
     window.liveSpeechRecognizer = rec;
   }
 
-  // Frame-Bound Live Voice Memory: Links spoken statements directly to the current active frame!
+  // Live Override Tagging (Everything is auto-included as Yours unless overridden here)
   function handleUserVoiceCommand(transcript) {
     const activeFrame = savedFrames[savedFrames.length - 1];
     const frameLabel = activeFrame ? activeFrame.filename : "Current View";
 
     const userTextEl = document.getElementById("userSpeechText");
     if (userTextEl) {
-      userTextEl.textContent = `[Bound to ${frameLabel}]: "${transcript}"`;
+      userTextEl.textContent = `[Marked on ${frameLabel}]: "${transcript}"`;
     }
 
     if (activeFrame) {
@@ -286,7 +326,6 @@
 
     const low = transcript.toLowerCase();
 
-    // 1. User says "Not my shelf", "Not mine", "Exclude", or "Skip" -> Excludes the current frame!
     if (
       low.includes("not my") ||
       low.includes("not mine") ||
@@ -299,26 +338,24 @@
         excludedFrameRefs.add(activeFrame.frameRef);
         renderFilmstripAndFramesGrid();
         renderLiveLists();
-        speakAgent(`Marked Frame ${activeFrame.index} as not yours—it will be excluded from the final report.`);
+        speakAgent(`Excluded Frame ${activeFrame.index} as not yours.`);
       } else {
-        speakAgent("Noted. I will exclude this section.");
+        speakAgent("Noted. Excluding this section.");
       }
       return;
     }
 
-    // 2. User says "first edition", "signed", or "rare"
     if (low.includes("first edition") || low.includes("signed") || low.includes("rare")) {
       const lastBook = rawBooksBuffer[rawBooksBuffer.length - 1];
       if (lastBook) {
         lastBook.status = "needs_appraisal";
-        lastBook.rare_or_signed_reason = `User stated during ${frameLabel}: "${transcript}"`;
+        lastBook.rare_or_signed_reason = `User marked during ${frameLabel}: "${transcript}"`;
         renderLiveLists();
       }
-      speakAgent(`Tagged book in ${frameLabel} as a rare or signed edition.`);
+      speakAgent(`Marked book in ${frameLabel} as a signed or rare edition.`);
       return;
     }
 
-    // 3. User says "print" / "reproduction" vs "original"
     if (low.includes("print") || low.includes("reproduction") || low.includes("poster")) {
       if (activeFrame) activeFrame.userArtNote = "print";
       const artItem = [...rawItemsBuffer].reverse().find(i => i.category === "framed_art" || i.is_art_or_portrait);
@@ -328,7 +365,7 @@
         artItem.status = "range";
         renderLiveLists();
       }
-      speakAgent(`Tagged picture in ${frameLabel} as a print.`);
+      speakAgent(`Marked artwork in ${frameLabel} as a print.`);
     } else if (low.includes("original")) {
       if (activeFrame) activeFrame.userArtNote = "original";
       const artItem = [...rawItemsBuffer].reverse().find(i => i.category === "framed_art" || i.is_art_or_portrait);
@@ -338,7 +375,7 @@
         artItem.status = "needs_appraisal";
         renderLiveLists();
       }
-      speakAgent(`Tagged picture in ${frameLabel} as an original artwork for appraisal.`);
+      speakAgent(`Marked artwork in ${frameLabel} as an original for appraisal.`);
     }
   }
 
@@ -396,7 +433,7 @@
   function beginSweepLoop(videoEl) {
     isSweeping = true;
     sweepStartTime = Date.now();
-    lastLocalSnapTime = 0;
+    lastLocalSnapTime = Date.now() - 2500;
     lastCloudCallTime = Date.now() - 2500;
     steadyTicksCount = 0;
 
@@ -408,7 +445,7 @@
     const [country, currency] = document.getElementById("localeSelect").value.split("|");
 
     speakAgent(
-      `Sweep started for ${country}. Pause for half a second on each area—like your table, bed, or shelf—until you hear the camera shutter click, then move to the next.`
+      `Sweep started in ${currency}. Everything is automatically counted as yours. Pan smoothly—the camera will only snap when pixels change by at least 18 percent.`
     );
 
     if (window.liveSpeechRecognizer) {
@@ -448,41 +485,47 @@
       }
     }, 500);
 
-    // 250ms Local Scene Tracker: Snaps every distinct room view into local memory immediately!
+    // 300ms Synced Pixel-Change & Stability Tracker (Balanced Pace: Min 4.0s between snaps + >=18% pixel change)
     clearInterval(blurInterval);
     blurInterval = setInterval(() => {
       if (!isSweeping) return;
       const activeProfile = window.CloudVisionAndPrice.getPacingProfile(modelSelectEl.value);
-      const { sharpness, sharpnessPct, glarePct, panCmPerSec, grayBuffer } = computeSharpnessGlareAndPanSpeed(
+      const pixelThreshold = parseFloat(document.getElementById("pixelThresholdInput")?.value || "18");
+
+      const { sharpness, sharpnessPct, glarePct, panCmPerSec, signature } = analyzeFrameAndSignature(
         videoEl,
         workCanvas,
-        prevTickGray
+        prevTickSignature
       );
-      prevTickGray = grayBuffer;
+      prevTickSignature = signature;
       currentSharpness = sharpness;
       currentPanCmPerSec = panCmPerSec;
 
+      const pixelDiffPct = computeMinPixelChangeFromSaved(signature);
+      const timeSinceSnap = Date.now() - lastLocalSnapTime;
+      const minGapMs = activeProfile.minSnapGapMs || 4000;
+
       const sharpBadge = document.getElementById("sharpnessBadge");
+      const pixelDiffBadge = document.getElementById("pixelDiffBadge");
       const motionBadge = document.getElementById("motionBadge");
       const queueBadge = document.getElementById("queueBadge");
       const alertBanner = document.getElementById("alertBanner");
       const trafficBanner = document.getElementById("moveTrafficBanner");
       const progressBar = document.getElementById("captureProgressBar");
 
-      const isMovingFast = panCmPerSec > 18 || gyroSpeedDegPerSec > 55;
+      const isMovingFast = panCmPerSec > activeProfile.maxPanCmPerSec || gyroSpeedDegPerSec > activeProfile.maxGyroDegPerSec;
       const isBlurry = sharpness < 10;
 
       sharpBadge.textContent = `🎯 Sharpness: ${sharpnessPct}%`;
+      pixelDiffBadge.textContent = `🔄 Pixel Change: ${pixelDiffPct}% (Need ≥${pixelThreshold}%)`;
       motionBadge.textContent = `🧭 Pan: ${panCmPerSec} cm/s`;
-      queueBadge.textContent = `☁️ Queue: ${pendingCloudQueue.length} pending`;
+      queueBadge.textContent = `☁️ Queue: ${pendingCloudQueue.length}`;
 
-      // Calculate how different the current camera view is from the last locally snapped frame
-      const noveltyPct = computeSceneNoveltyPct(grayBuffer, lastSnappedGray);
-      const timeSinceSnap = Date.now() - lastLocalSnapTime;
-
-      // Show novelty progress bar (when novelty >= 10.5% and user pauses for 2 ticks = 0.5s, it snaps!)
-      const readinessPct = Math.min(100, Math.round((noveltyPct / 10.5) * 100));
-      if (progressBar) progressBar.style.width = `${readinessPct}%`;
+      // Progress bar combines pixel change readiness and 4-second pacing timer
+      const pixelProgress = Math.min(100, Math.round((pixelDiffPct / pixelThreshold) * 100));
+      const timeProgress = Math.min(100, Math.round((timeSinceSnap / minGapMs) * 100));
+      const combinedReadiness = savedFrames.length === 0 ? timeProgress : Math.min(pixelProgress, timeProgress);
+      if (progressBar) progressBar.style.width = `${combinedReadiness}%`;
 
       if (!isMovingFast && !isBlurry) {
         steadyTicksCount++;
@@ -490,45 +533,58 @@
         steadyTicksCount = 0;
       }
 
-      // If user panned to a new area (novelty >= 10.5%) AND paused briefly (steadyTicksCount >= 2, >1.4s since last snap)
+      // 1. Check if view is unique (pixelDiffPct >= pixelThreshold) AND 4.0s timer has elapsed AND camera is steady for ~0.9s (3 ticks)
       if (
-        (savedFrames.length === 0 && steadyTicksCount >= 2) ||
-        (noveltyPct >= 10.5 && steadyTicksCount >= 2 && timeSinceSnap >= 1400)
+        (savedFrames.length === 0 && steadyTicksCount >= 3 && timeSinceSnap >= 1800) ||
+        (pixelDiffPct >= pixelThreshold && timeSinceSnap >= minGapMs && steadyTicksCount >= 3)
       ) {
-        lastSnappedGray = grayBuffer ? new Float32Array(grayBuffer) : null;
+        if (signature) capturedSignatures.push(new Float32Array(signature));
         steadyTicksCount = 0;
-        snapLocalFrameToMemory(videoEl);
-      } else if (noveltyPct >= 10.5 && (isMovingFast || steadyTicksCount < 2)) {
-        // User has moved to a new item (e.g. Bed) -> tell them to pause for 0.4s so it snaps!
+        snapLocalFrameToMemory(videoEl, pixelDiffPct);
+      } else if (pixelDiffPct < pixelThreshold && savedFrames.length > 0) {
+        // Pixels haven't changed enough -> tell user this view is already captured so no duplicate is taken!
+        if (trafficBanner && timeSinceSnap > 1600) {
+          trafficBanner.className = "traffic-banner waiting";
+          trafficBanner.textContent = `⏸️ View Already Captured (Pixel Change ${pixelDiffPct}% < ${pixelThreshold}%) — Pan to next area ➡️`;
+        }
+      } else if (pixelDiffPct >= pixelThreshold && timeSinceSnap < minGapMs) {
+        const waitSec = ((minGapMs - timeSinceSnap) / 1000).toFixed(1);
         if (trafficBanner) {
           trafficBanner.className = "traffic-banner hold-steady";
-          trafficBanner.textContent = `🟡 NEW VIEW DETECTED — Hold steady for 0.5s to snap photo!`;
+          trafficBanner.textContent = `🟡 Unique View Detected (${pixelDiffPct}% changed) — Auto-snapping in ${waitSec}s (Hold steady)`;
+        }
+      } else if (pixelDiffPct >= pixelThreshold && steadyTicksCount < 3) {
+        if (trafficBanner) {
+          trafficBanner.className = "traffic-banner hold-steady";
+          trafficBanner.textContent = `🟡 Unique View Ready (${pixelDiffPct}% changed) — Hold steady for a moment to snap!`;
         }
       }
 
-      if (isMovingFast && timeSinceSnap > 2200) {
+      if (isMovingFast) {
         alertBanner.classList.remove("hidden");
-        alertBanner.textContent = `⚠️ Pause briefly on this item so the camera can snap a sharp frame!`;
+        alertBanner.textContent = `⚠️ Panning slightly fast (${panCmPerSec} cm/s) — Slow down to ≤${activeProfile.maxPanCmPerSec} cm/s`;
       } else {
         alertBanner.classList.add("hidden");
       }
-    }, 250);
+    }, 300);
 
-    // Background Cloud Batch Worker: Sends up to 3 queued local frames in ONE single API call!
+    // Background Cloud Batch Worker
     clearInterval(cloudWorkerInterval);
     cloudWorkerInterval = setInterval(() => {
-      processPendingCloudBatch(false);
-    }, 600);
+      if (!isAnalyzingCloud && pendingCloudQueue.length > 0) {
+        processPendingCloudBatch(false);
+      }
+    }, 800);
   }
 
   // Manual Force Snap button
   document.getElementById("captureKeyframeBtn").addEventListener("click", () => {
     const videoEl = document.getElementById("cameraVideo");
-    snapLocalFrameToMemory(videoEl);
+    if (prevTickSignature) capturedSignatures.push(new Float32Array(prevTickSignature));
+    snapLocalFrameToMemory(videoEl, 100);
   });
 
-  // Immediately captures the current video frame into local memory + filmstrip (0ms lag, 0 API cost)
-  function snapLocalFrameToMemory(videoEl) {
+  function snapLocalFrameToMemory(videoEl, pixelChangePct) {
     if (!isSweeping || !videoEl || videoEl.readyState < 2) return;
 
     lastLocalSnapTime = Date.now();
@@ -552,8 +608,9 @@
       dataUrl,
       width: captureCanvas.width,
       height: captureCanvas.height,
-      status: "queued", // "queued" | "scanned"
-      excludedByUser: false,
+      pixelChangePct,
+      status: "queued",
+      excludedByUser: false, // Auto-included as user's own property by default
       voiceNotes: [],
       userArtNote: ""
     };
@@ -561,8 +618,7 @@
     savedFrames.push(frameObj);
     pendingCloudQueue.push(frameObj);
 
-    // Unmistakable visual + audio shutter click + green "MOVE ON" banner
-    triggerShutterVisual(frameIdx);
+    triggerShutterVisual(frameIdx, pixelChangePct);
     renderFilmstripAndFramesGrid();
 
     document.getElementById("liveFrameCount").textContent = savedFrames.length;
@@ -570,20 +626,26 @@
     const captureBadge = document.getElementById("captureStateBadge");
     if (captureBadge) {
       captureBadge.className = "capture-badge ready";
-      captureBadge.textContent = `📸 ${savedFrames.length} Snapped (${pendingCloudQueue.length} in Cloud Queue)`;
+      captureBadge.textContent = `📸 ${savedFrames.length} Unique Frames (${pendingCloudQueue.length} Queued)`;
     }
   }
 
-  // Background Cloud Batch Processor: bundles up to 3 local frames into 1 API call to respect rate limits
-  async function processPendingCloudBatch(flushAll) {
-    if (isAnalyzingCloud || pendingCloudQueue.length === 0) return;
+  // Non-blocking Cloud Batch Processor (Tracks activeCloudPromise so Finish button never deadlocks)
+  function processPendingCloudBatch(flushAll) {
+    if (isAnalyzingCloud) {
+      return activeCloudPromise || Promise.resolve();
+    }
+    if (pendingCloudQueue.length === 0) {
+      return Promise.resolve();
+    }
 
     const activeProfile = window.CloudVisionAndPrice.getPacingProfile(modelSelectEl.value);
     const timeSinceLastCloud = Date.now() - lastCloudCallTime;
 
-    if (!flushAll && timeSinceLastCloud < activeProfile.batchIntervalMs) return;
+    if (!flushAll && timeSinceLastCloud < activeProfile.batchIntervalMs) {
+      return Promise.resolve();
+    }
 
-    // Pop up to maxBatchSize (3) non-excluded frames from the queue
     const batch = [];
     while (pendingCloudQueue.length > 0 && batch.length < activeProfile.maxBatchSize) {
       const f = pendingCloudQueue.shift();
@@ -594,124 +656,125 @@
       }
     }
     renderFilmstripAndFramesGrid();
-    if (batch.length === 0) return;
+    if (batch.length === 0) return Promise.resolve();
 
     isAnalyzingCloud = true;
     lastCloudCallTime = Date.now();
 
-    const apiKey = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
-    const modelChoice = document.getElementById("modelSelect").value;
-    const [countryCode] = document.getElementById("localeSelect").value.split("|");
+    activeCloudPromise = (async () => {
+      const apiKey = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
+      const modelChoice = document.getElementById("modelSelect").value;
+      const [countryCode] = document.getElementById("localeSelect").value.split("|");
 
-    const frameNames = batch.map(b => `#${b.index}`).join(", ");
-    const speechEl = document.getElementById("agentSpeechText");
-    if (speechEl) {
-      speechEl.textContent = `☁️ Cloud Batch Analyzing Frame(s) ${frameNames} in 1 API call... (Keep panning!)`;
-    }
-
-    const callStart = performance.now();
-    try {
-      const batchResult = await window.CloudVisionAndPrice.analyzeKeyframeBatch(
-        batch,
-        apiKey,
-        modelChoice,
-        countryCode
-      );
-      const elapsedSec = ((performance.now() - callStart) / 1000).toFixed(1);
-
-      const modelBadge = document.getElementById("modelBadge");
-      if (modelBadge) {
-        modelBadge.textContent = `🤖 ${window.CloudVisionAndPrice.lastUsedModel} (${elapsedSec}s batch)`;
-      }
-
-      let batchBooksCount = 0;
-      let batchItemsCount = 0;
-
-      for (const frameData of (batchResult.frames || [])) {
-        const ref = frameData.frame_ref || batch[0].frameRef;
-        const matchedFrame = savedFrames.find(f => f.frameRef === ref) || batch[0];
-        matchedFrame.status = "scanned";
-
-        if (frameData.excluded_by_user || matchedFrame.excludedByUser) {
-          matchedFrame.excludedByUser = true;
-          excludedFrameRefs.add(matchedFrame.frameRef);
-          continue;
-        }
-
-        const fBooks = frameData.books || [];
-        const fItems = frameData.items || [];
-        batchBooksCount += fBooks.length;
-        batchItemsCount += fItems.length;
-
-        if (window.EdgeSegmentation) {
-          window.EdgeSegmentation.updateCloudBoxes(fBooks, fItems);
-        }
-
-        const pxHeights = fBooks
-          .map(b => b.bbox_2d ? ((b.bbox_2d[2] - b.bbox_2d[0]) / 1000) * matchedFrame.height : 280)
-          .filter(h => h > 40)
-          .sort((a, b) => a - b);
-        const medianPx = pxHeights.length ? pxHeights[Math.floor(pxHeights.length / 2)] : 280;
-
-        for (const b of fBooks) {
-          const dims = window.EdgeSegmentation.measureNormalizedBox(
-            b.bbox_2d,
-            matchedFrame.width,
-            matchedFrame.height,
-            medianPx
-          );
-          rawBooksBuffer.push({
-            ...b,
-            shelf: frameData.shelf_id || `Shelf_${matchedFrame.index}`,
-            frame_ref: matchedFrame.frameRef,
-            spine_height_cm: dims.height_cm,
-            spine_thickness_cm: dims.thickness_cm
-          });
-        }
-
-        for (const item of fItems) {
-          if (matchedFrame.userArtNote === "print" || item.user_art_note === "print") {
-            item.user_confirmed_print = true;
-            item.user_art_note = "print";
-          } else if (matchedFrame.userArtNote === "original" || item.user_art_note === "original") {
-            item.user_confirmed_print = false;
-            item.user_art_note = "original";
-          }
-          rawItemsBuffer.push({
-            ...item,
-            frame_ref: matchedFrame.frameRef
-          });
-        }
-      }
-
-      if (batchResult.room_estimate?.estimated_length_m) {
-        roomEstimate.length_m = batchResult.room_estimate.estimated_length_m;
-        roomEstimate.width_m = batchResult.room_estimate.estimated_width_m || 3.5;
-        roomEstimate.shape_note = batchResult.room_estimate.shape_note || "rectangular";
-      }
-
-      renderFilmstripAndFramesGrid();
-      renderLiveLists();
-
-      if (batchBooksCount > 0 || batchItemsCount > 0) {
-        speakAgent(
-          `Processed Frame ${frameNames}: logged ${batchBooksCount} books and ${batchItemsCount} room items.`
-        );
-      }
-    } catch (err) {
-      console.error("Batch analysis error:", err);
-      // Mark frames so user sees status
-      batch.forEach(f => { f.status = "scanned"; });
-      renderFilmstripAndFramesGrid();
+      const frameNames = batch.map(b => `#${b.index}`).join(", ");
+      const speechEl = document.getElementById("agentSpeechText");
       if (speechEl) {
-        speechEl.textContent = `⚠️ Batch Notice on ${frameNames}: ${err.message}`;
+        speechEl.textContent = `☁️ Cloud Batch Scanning Unique Frame(s) ${frameNames}...`;
       }
-    } finally {
-      isAnalyzingCloud = false;
-    }
+
+      const callStart = performance.now();
+      try {
+        const batchResult = await window.CloudVisionAndPrice.analyzeKeyframeBatch(
+          batch,
+          apiKey,
+          modelChoice,
+          countryCode
+        );
+        const elapsedSec = ((performance.now() - callStart) / 1000).toFixed(1);
+
+        const modelBadge = document.getElementById("modelBadge");
+        if (modelBadge) {
+          modelBadge.textContent = `🤖 ${window.CloudVisionAndPrice.lastUsedModel} (${elapsedSec}s)`;
+        }
+
+        let batchBooksCount = 0;
+        let batchItemsCount = 0;
+
+        for (const frameData of (batchResult.frames || [])) {
+          const ref = frameData.frame_ref || batch[0].frameRef;
+          const matchedFrame = savedFrames.find(f => f.frameRef === ref) || batch[0];
+          matchedFrame.status = "scanned";
+
+          if (frameData.excluded_by_user || matchedFrame.excludedByUser) {
+            matchedFrame.excludedByUser = true;
+            excludedFrameRefs.add(matchedFrame.frameRef);
+            continue;
+          }
+
+          const fBooks = frameData.books || [];
+          const fItems = frameData.items || [];
+          batchBooksCount += fBooks.length;
+          batchItemsCount += fItems.length;
+
+          if (window.EdgeSegmentation) {
+            window.EdgeSegmentation.updateCloudBoxes(fBooks, fItems);
+          }
+
+          const pxHeights = fBooks
+            .map(b => b.bbox_2d ? ((b.bbox_2d[2] - b.bbox_2d[0]) / 1000) * matchedFrame.height : 280)
+            .filter(h => h > 40)
+            .sort((a, b) => a - b);
+          const medianPx = pxHeights.length ? pxHeights[Math.floor(pxHeights.length / 2)] : 280;
+
+          for (const b of fBooks) {
+            const dims = window.EdgeSegmentation.measureNormalizedBox(
+              b.bbox_2d,
+              matchedFrame.width,
+              matchedFrame.height,
+              medianPx
+            );
+            rawBooksBuffer.push({
+              ...b,
+              shelf: frameData.shelf_id || `Shelf_${matchedFrame.index}`,
+              frame_ref: matchedFrame.frameRef,
+              spine_height_cm: dims.height_cm,
+              spine_thickness_cm: dims.thickness_cm
+            });
+          }
+
+          for (const item of fItems) {
+            if (matchedFrame.userArtNote === "print" || item.user_art_note === "print") {
+              item.user_confirmed_print = true;
+              item.user_art_note = "print";
+            } else if (matchedFrame.userArtNote === "original" || item.user_art_note === "original") {
+              item.user_confirmed_print = false;
+              item.user_art_note = "original";
+            }
+            rawItemsBuffer.push({
+              ...item,
+              frame_ref: matchedFrame.frameRef
+            });
+          }
+        }
+
+        if (batchResult.room_estimate?.estimated_length_m) {
+          roomEstimate.length_m = batchResult.room_estimate.estimated_length_m;
+          roomEstimate.width_m = batchResult.room_estimate.estimated_width_m || 3.5;
+          roomEstimate.shape_note = batchResult.room_estimate.shape_note || "rectangular";
+        }
+
+        renderFilmstripAndFramesGrid();
+        renderLiveLists();
+
+        if (batchBooksCount > 0 || batchItemsCount > 0) {
+          speakAgent(`Logged ${batchBooksCount} books and ${batchItemsCount} items from Frame ${frameNames}.`);
+        }
+      } catch (err) {
+        console.error("Batch analysis error:", err);
+        batch.forEach(f => { f.status = "scanned"; });
+        renderFilmstripAndFramesGrid();
+        if (speechEl) {
+          speechEl.textContent = `⚠️ Batch Notice on ${frameNames}: ${err.message}`;
+        }
+      } finally {
+        isAnalyzingCloud = false;
+        activeCloudPromise = null;
+      }
+    })();
+
+    return activeCloudPromise;
   }
 
-  // Toggles whether a specific captured frame is included or excluded ("Not Mine")
   function toggleFrameExclusion(frameIdx) {
     const f = savedFrames.find(x => x.index === frameIdx);
     if (!f) return;
@@ -726,21 +789,20 @@
   }
   window.toggleFrameExclusion = toggleFrameExclusion;
 
-  // Renders both the live bottom-of-video Filmstrip Memory and the All Frames Tab
   function renderFilmstripAndFramesGrid() {
     const strip = document.getElementById("liveFilmstrip");
     const hint = document.getElementById("filmstripHint");
     if (hint) {
       const exclCount = excludedFrameRefs.size;
-      hint.textContent = `${savedFrames.length} snapped (${exclCount} excluded)`;
+      hint.textContent = `${savedFrames.length} unique frames (${exclCount} marked Not Mine)`;
     }
 
     if (strip) {
       strip.innerHTML = savedFrames.map(f => {
         const cls = f.excludedByUser ? "excluded" : (f.status === "queued" ? "queued" : "");
-        const badge = f.excludedByUser ? "🚫 Not Mine" : (f.status === "queued" ? `⏳ #${f.index}` : `✅ #${f.index}`);
+        const badge = f.excludedByUser ? "🚫 Not Mine" : (f.status === "queued" ? `⏳ #${f.index} Yours` : `✅ #${f.index} Yours`);
         return `
-          <div class="strip-thumb ${cls}" onclick="window.toggleFrameExclusion(${f.index})" title="Click to toggle Include vs Exclude (Not Mine)">
+          <div class="strip-thumb ${cls}" onclick="window.toggleFrameExclusion(${f.index})" title="Default: Yours. Click to toggle Not Mine / Exclude">
             <img src="${f.dataUrl}" alt="${f.filename}" />
             <div class="strip-lbl">${badge}</div>
           </div>
@@ -754,7 +816,8 @@
       grid.innerHTML = savedFrames.map(f => `
         <div class="frame-card ${f.excludedByUser ? "excluded" : ""}" onclick="window.toggleFrameExclusion(${f.index})">
           <img src="${f.dataUrl}" alt="${f.filename}" />
-          <div><strong>#${f.index}</strong> (${f.excludedByUser ? "🚫 Excluded" : "✅ Included"})</div>
+          <div><strong>#${f.index}</strong> (${f.excludedByUser ? "🚫 Not Mine" : "✅ Yours"})</div>
+          <div style="font-size:0.62rem;color:#9ca3af;">Δ Pixels: ${f.pixelChangePct || 100}%</div>
           ${f.voiceNotes?.length ? `<div style="font-size:0.62rem;color:#67e8f9;">🎙️ "${f.voiceNotes.join(", ")}"</div>` : ""}
         </div>
       `).join("");
@@ -785,7 +848,7 @@
         </div>
       `).join("");
     } else {
-      booksListEl.innerHTML = `<p class="empty-hint">No active books in included frames yet.</p>`;
+      booksListEl.innerHTML = `<p class="empty-hint">Books will appear here live as unique frames are scanned...</p>`;
     }
 
     const itemsListEl = document.getElementById("liveItemsList");
@@ -797,18 +860,28 @@
         </div>
       `).join("");
     } else {
-      itemsListEl.innerHTML = `<p class="empty-hint">No active room items in included frames yet.</p>`;
+      itemsListEl.innerHTML = `<p class="empty-hint">Beds, tables, shelving, lamps, electronics, and art will log here...</p>`;
     }
   }
 
-  // Step 1 on Clicking "Finish & Review Q&A": Flush remaining queue & open Visual Q&A + Frame Audit Session!
-  document.getElementById("finishSweepBtn").addEventListener("click", async () => {
+  // Finish Sweep & Directly Generate Final Report (Zero Freeze, No Extra Q&A Step)
+  const finishBtn = document.getElementById("finishSweepBtn");
+  finishBtn.addEventListener("click", async () => {
     isSweeping = false;
+    finishBtn.disabled = true;
+    finishBtn.textContent = "⏳ Building Final Report...";
+
     clearInterval(timerInterval);
     clearInterval(edgeInterval);
     clearInterval(blurInterval);
     clearInterval(cloudWorkerInterval);
     document.getElementById("statusDot").classList.remove("active");
+
+    const trafficBanner = document.getElementById("moveTrafficBanner");
+    if (trafficBanner) {
+      trafficBanner.className = "traffic-banner hold-steady";
+      trafficBanner.textContent = "⏳ Finishing cloud sync & pricing inventory... Please wait a few seconds.";
+    }
 
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
@@ -817,267 +890,83 @@
     if (window.EdgeSegmentation) {
       window.EdgeSegmentation.release();
     }
-
-    // Flush any remaining frames in pendingCloudQueue before opening Q&A
-    while (pendingCloudQueue.length > 0) {
-      await processPendingCloudBatch(true);
-    }
-
-    openPreReportVisualQaSession();
-  });
-
-  // Builds the Pre-Report Interactive Visual Q&A & Frame Audit UI (Shows exact photo + highlight box for every question!)
-  function openPreReportVisualQaSession() {
-    const qaSection = document.getElementById("qaReviewSection");
-    const questionsContainer = document.getElementById("qaQuestionsContainer");
-    const framesAuditGrid = document.getElementById("qaFramesAuditGrid");
-
-    qaSection.classList.remove("hidden");
-    qaSection.scrollIntoView({ behavior: "smooth" });
-
-    const { uniqueBooks, uniqueItems } = window.CloudVisionAndPrice.deduplicateInventory(
-      rawBooksBuffer,
-      rawItemsBuffer,
-      excludedFrameRefs
-    );
-
-    const qaCardsHtml = [];
-    const drawTasks = [];
-
-    // 1. Find all Framed Art / Wall Pictures or Uncertain Items needing user confirmation
-    uniqueItems.forEach((item, idx) => {
-      if (item.category === "framed_art" || item.is_art_or_portrait || item.description.toLowerCase().includes("picture") || item.description.toLowerCase().includes("portrait") || item.description.toLowerCase().includes("art")) {
-        const canvasId = `qa_art_canvas_${idx}`;
-        const currentChoice = item.user_art_note || (item.user_confirmed_print ? "print" : "original");
-        qaCardsHtml.push(`
-          <div class="qa-item-card" id="qa_card_item_${idx}">
-            <canvas id="${canvasId}" width="480" height="270"></canvas>
-            <div>
-              <strong>🖼️ Question on <code>${item.frame_ref}</code>:</strong>
-              <p style="font-size:0.8rem;color:#d1d5db;margin-top:2px;">
-                We detected <strong>"${item.description}"</strong> (highlighted in cyan above). Is this a reproduction print or an original artwork?
-              </p>
-            </div>
-            <div class="qa-opt-btns">
-              <button type="button" class="qa-opt-btn ${currentChoice === "print" ? "selected" : ""}" onclick="window.setQaItemDecision('${item.frame_ref}', '${item.description.replace(/'/g, "")}', 'print', this)">
-                🖼️ It's a Print (Price Normally)
-              </button>
-              <button type="button" class="qa-opt-btn ${currentChoice === "original" ? "selected" : ""}" onclick="window.setQaItemDecision('${item.frame_ref}', '${item.description.replace(/'/g, "")}', 'original', this)">
-                🎨 Original Art (Needs Appraisal)
-              </button>
-              <button type="button" class="qa-opt-btn" onclick="window.setQaItemDecision('${item.frame_ref}', '${item.description.replace(/'/g, "")}', 'exclude', this)">
-                🚫 Not Mine / Exclude
-              </button>
-            </div>
-          </div>
-        `);
-        drawTasks.push({ canvasId, frameRef: item.frame_ref, bbox: item.bbox_2d, color: "#06b6d4", label: item.description });
-      }
-    });
-
-    // 2. Find any Flagged / Rare Books
-    uniqueBooks.forEach((book, idx) => {
-      if (book.status === "needs_appraisal" || book.rare_or_signed_reason) {
-        const canvasId = `qa_book_canvas_${idx}`;
-        qaCardsHtml.push(`
-          <div class="qa-item-card" id="qa_card_book_${idx}">
-            <canvas id="${canvasId}" width="480" height="270"></canvas>
-            <div>
-              <strong>📚 Book Check on <code>${book.frame_ref}</code>:</strong>
-              <p style="font-size:0.8rem;color:#d1d5db;margin-top:2px;">
-                <strong>"${book.title || "Spine"}"</strong> was flagged (${book.rare_or_signed_reason || "Appraisal check"}). How should we handle it?
-              </p>
-            </div>
-            <div class="qa-opt-btns">
-              <button type="button" class="qa-opt-btn selected" onclick="window.setQaBookDecision('${book.frame_ref}', '${(book.title || "").replace(/'/g, "")}', 'appraisal', this)">
-                ⭐ Keep Flagged for Appraisal
-              </button>
-              <button type="button" class="qa-opt-btn" onclick="window.setQaBookDecision('${book.frame_ref}', '${(book.title || "").replace(/'/g, "")}', 'standard', this)">
-                📗 Standard Edition (Price Normally)
-              </button>
-              <button type="button" class="qa-opt-btn" onclick="window.setQaBookDecision('${book.frame_ref}', '${(book.title || "").replace(/'/g, "")}', 'exclude', this)">
-                🚫 Not Mine / Exclude
-              </button>
-            </div>
-          </div>
-        `);
-        drawTasks.push({ canvasId, frameRef: book.frame_ref, bbox: book.bbox_2d, color: "#10b981", label: book.title || "Book" });
-      }
-    });
-
-    if (qaCardsHtml.length === 0) {
-      questionsContainer.innerHTML = `
-        <div class="qa-item-card">
-          <strong>✅ Zero Ambiguous Artworks or Unresolved Questions!</strong>
-          <p style="font-size:0.82rem;color:#9ca3af;">
-            All detected items are clear. You can still review the captured frames below to exclude any shelf or area that is not yours, then click <strong>"Confirm All & Generate Final Claim Report"</strong>.
-          </p>
-        </div>
-      `;
-      speakAgent("Sweep complete! Please verify your captured frames below, then click Confirm to generate your priced claim report.");
-    } else {
-      questionsContainer.innerHTML = qaCardsHtml.join("");
-      speakAgent(
-        `Sweep complete! I have ${qaCardsHtml.length} visual question${qaCardsHtml.length > 1 ? "s" : ""} shown with their exact photo below. Click an option on each photo, then click Confirm.`
-      );
-    }
-
-    // Draw the exact frame image + highlighted bounding box on each question canvas
-    setTimeout(() => {
-      for (const task of drawTasks) {
-        const c = document.getElementById(task.canvasId);
-        const frameObj = savedFrames.find(f => f.frameRef === task.frameRef) || savedFrames[0];
-        if (!c || !frameObj) continue;
-        const ctx = c.getContext("2d");
-        const img = new Image();
-        img.onload = () => {
-          ctx.drawImage(img, 0, 0, c.width, c.height);
-          if (Array.isArray(task.bbox) && task.bbox.length === 4) {
-            const [ymin, xmin, ymax, xmax] = task.bbox;
-            const x = (xmin / 1000) * c.width;
-            const y = (ymin / 1000) * c.height;
-            const w = ((xmax - xmin) / 1000) * c.width;
-            const h = ((ymax - ymin) / 1000) * c.height;
-            ctx.strokeStyle = task.color;
-            ctx.lineWidth = 4;
-            ctx.strokeRect(x, y, w, h);
-            ctx.fillStyle = "rgba(11, 15, 25, 0.85)";
-            ctx.fillRect(x, Math.max(0, y - 22), Math.min(c.width - x, 240), 22);
-            ctx.fillStyle = "#fff";
-            ctx.font = "bold 12px sans-serif";
-            ctx.fillText(`🎯 ${task.label.slice(0, 28)}`, x + 5, Math.max(15, y - 6));
-          }
-        };
-        img.src = frameObj.dataUrl;
-      }
-    }, 60);
-
-    // Render Frame Audit Grid inside Q&A modal
-    renderQaFramesAuditGrid(framesAuditGrid);
-  }
-
-  function renderQaFramesAuditGrid(container) {
-    if (!container) return;
-    container.innerHTML = savedFrames.map(f => `
-      <div class="frame-card ${f.excludedByUser ? "excluded" : ""}" onclick="window.toggleFrameInQa(${f.index})">
-        <img src="${f.dataUrl}" alt="${f.filename}" />
-        <div style="padding:4px;">
-          <strong>Frame #${f.index}</strong><br/>
-          <span style="color:${f.excludedByUser ? "#ef4444" : "#10b981"};font-weight:700;">
-            ${f.excludedByUser ? "🚫 Excluded (Not Mine)" : "✅ Included in Claim"}
-          </span>
-          ${f.voiceNotes?.length ? `<div style="font-size:0.65rem;color:#67e8f9;margin-top:2px;">🎙️ "${f.voiceNotes.join("; ")}"</div>` : ""}
-        </div>
-      </div>
-    `).join("");
-  }
-
-  window.toggleFrameInQa = function (frameIdx) {
-    toggleFrameExclusion(frameIdx);
-    renderQaFramesAuditGrid(document.getElementById("qaFramesAuditGrid"));
-  };
-
-  window.setQaItemDecision = function (frameRef, descSnippet, decision, btnEl) {
-    if (btnEl && btnEl.parentElement) {
-      btnEl.parentElement.querySelectorAll(".qa-opt-btn").forEach(b => b.classList.remove("selected"));
-      btnEl.classList.add("selected");
-    }
-    for (const it of rawItemsBuffer) {
-      if (it.frame_ref === frameRef || it.description.replace(/'/g, "") === descSnippet) {
-        if (decision === "print") {
-          it.user_confirmed_print = true;
-          it.user_art_note = "print";
-          it.status = "range";
-          it.excluded_by_user = false;
-        } else if (decision === "original") {
-          it.user_confirmed_print = false;
-          it.user_art_note = "original";
-          it.status = "needs_appraisal";
-          it.excluded_by_user = false;
-        } else if (decision === "exclude") {
-          it.excluded_by_user = true;
-        }
-      }
-    }
-    renderLiveLists();
-  };
-
-  window.setQaBookDecision = function (frameRef, titleSnippet, decision, btnEl) {
-    if (btnEl && btnEl.parentElement) {
-      btnEl.parentElement.querySelectorAll(".qa-opt-btn").forEach(b => b.classList.remove("selected"));
-      btnEl.classList.add("selected");
-    }
-    for (const b of rawBooksBuffer) {
-      if (b.frame_ref === frameRef && (b.title || "").replace(/'/g, "") === titleSnippet) {
-        if (decision === "appraisal") {
-          b.status = "needs_appraisal";
-          b.excluded_by_user = false;
-        } else if (decision === "standard") {
-          b.status = "identified";
-          b.user_forced_standard = true;
-          b.excluded_by_user = false;
-        } else if (decision === "exclude") {
-          b.excluded_by_user = true;
-        }
-      }
-    }
-    renderLiveLists();
-  };
-
-  // Step 2: Confirm Q&A & Generate Final Priced Claim Packet
-  document.getElementById("confirmQaAndGenerateBtn").addEventListener("click", async () => {
     if (window.liveSpeechRecognizer) {
       try { window.liveSpeechRecognizer.stop(); } catch (e) {}
     }
 
     const durationSec = Math.max(1, Math.round((Date.now() - sweepStartTime) / 1000));
-    speakAgent("Pricing your confirmed inventory against local catalogs and building your final claim packet.");
+    speakAgent("Sweep finished. Completing remaining frames and pricing your inventory now.");
 
-    const primaryLocale = document.getElementById("localeSelect").value;
-    const secondaryLocale = document.getElementById("secondaryLocaleSelect").value;
-    const [country, currency] = primaryLocale.split("|");
+    try {
+      // 1. Safely await any currently running in-flight cloud call (No spin-lock!)
+      if (activeCloudPromise) {
+        await activeCloudPromise;
+      }
 
-    const { uniqueBooks, uniqueItems } = window.CloudVisionAndPrice.deduplicateInventory(
-      rawBooksBuffer,
-      rawItemsBuffer,
-      excludedFrameRefs
-    );
+      // 2. Flush up to 4 remaining batches from pendingCloudQueue with non-blocking yields
+      let safetySteps = 0;
+      while (pendingCloudQueue.length > 0 && safetySteps < 5) {
+        safetySteps++;
+        await processPendingCloudBatch(true);
+        await new Promise(r => setTimeout(r, 150));
+      }
 
-    const { secondaryComparison } = await window.CloudVisionAndPrice.priceAllInventory(
-      uniqueBooks,
-      uniqueItems,
-      primaryLocale,
-      secondaryLocale
-    );
+      const primaryLocale = document.getElementById("localeSelect").value;
+      const secondaryLocale = document.getElementById("secondaryLocaleSelect").value;
+      const [country, currency] = primaryLocale.split("|");
 
-    roomEstimate.height_m = parseFloat(document.getElementById("ceilingRefM").value || "2.44");
+      const { uniqueBooks, uniqueItems } = window.CloudVisionAndPrice.deduplicateInventory(
+        rawBooksBuffer,
+        rawItemsBuffer,
+        excludedFrameRefs
+      );
 
-    finalPacket = window.PacketGenerator.buildPacket({
-      sweepMeta: {
-        id: `sweep_${Date.now()}`,
-        captured_at: new Date().toISOString(),
-        device: navigator.userAgent.slice(0, 65),
-        duration_s: durationSec,
-        country,
-        currency
-      },
-      roomEst: roomEstimate,
-      books: uniqueBooks,
-      items: uniqueItems,
-      secondaryComparison,
-      stageLatencies: window.CloudVisionAndPrice.stageLatenciesMs
-    });
+      const { secondaryComparison } = await window.CloudVisionAndPrice.priceAllInventory(
+        uniqueBooks,
+        uniqueItems,
+        primaryLocale,
+        secondaryLocale
+      );
 
-    const htmlReport = window.PacketGenerator.renderHtmlReport(finalPacket);
-    document.getElementById("printableReportContainer").innerHTML = htmlReport;
-    document.getElementById("qaReviewSection").classList.add("hidden");
-    document.getElementById("reportSection").classList.remove("hidden");
-    document.getElementById("reportSection").scrollIntoView({ behavior: "smooth" });
+      roomEstimate.height_m = parseFloat(document.getElementById("ceilingRefM").value || "2.44");
 
-    speakAgent(
-      `Claim packet ready. I logged ${finalPacket.totals.book_count} books across ${finalPacket.totals.shelf_run_m} meters of shelving, ` +
-      `valued at ${currency} ${finalPacket.totals.books_replacement_cost} new and ${currency} ${finalPacket.totals.books_used_value} used, plus ${finalPacket.items.length} room items.`
-    );
+      finalPacket = window.PacketGenerator.buildPacket({
+        sweepMeta: {
+          id: `sweep_${Date.now()}`,
+          captured_at: new Date().toISOString(),
+          device: navigator.userAgent.slice(0, 65),
+          duration_s: durationSec,
+          country,
+          currency
+        },
+        roomEst: roomEstimate,
+        books: uniqueBooks,
+        items: uniqueItems,
+        secondaryComparison,
+        stageLatencies: window.CloudVisionAndPrice.stageLatenciesMs
+      });
+
+      const htmlReport = window.PacketGenerator.renderHtmlReport(finalPacket);
+      document.getElementById("printableReportContainer").innerHTML = htmlReport;
+      document.getElementById("reportSection").classList.remove("hidden");
+      document.getElementById("reportSection").scrollIntoView({ behavior: "smooth" });
+
+      if (trafficBanner) {
+        trafficBanner.className = "traffic-banner snapped-move";
+        trafficBanner.textContent = "✅ Final Claim Report & ZIP Packet Ready Below!";
+      }
+
+      speakAgent(
+        `Claim packet ready. I logged ${finalPacket.totals.book_count} books across ${finalPacket.totals.shelf_run_m} meters of shelving, ` +
+        `valued at ${currency} ${finalPacket.totals.books_replacement_cost} new and ${currency} ${finalPacket.totals.books_used_value} used, plus ${finalPacket.items.length} room items.`
+      );
+    } catch (err) {
+      console.error("Error generating final report:", err);
+      alert("Notice while generating report: " + err.message);
+    } finally {
+      finishBtn.disabled = false;
+      finishBtn.textContent = "⏹️ Finish & Generate Final Report";
+    }
   });
 
   // Download Buttons

@@ -8,71 +8,79 @@ window.CloudVisionAndPrice = {
   lastUsedModel: "gemini-3.5-flash-lite",
   roundRobinIdx: 0,
 
-  // Model-specific rate limit & batch cooldown profiles
+  // Balanced capture intervals & pan speed limits synced with camera pixel-change detector
   MODEL_PACING_PROFILES: {
     "auto-multi-pool": {
       label: "Smart Multi-Pool (3.5 Lite + 3.1 Lite + Gemma 4 26B)",
-      batchIntervalMs: 4000,
+      minSnapGapMs: 4000,
+      batchIntervalMs: 4200,
       maxBatchSize: 3,
-      maxPanCmPerSec: 22,
-      maxGyroDegPerSec: 75,
-      guideText: "📏 Multi-Frame Batching Active: Pause ~0.4s per view to snap locally; up to 3 views sent per API call!"
+      maxPanCmPerSec: 18,
+      maxGyroDegPerSec: 65,
+      guideText: "📏 Synced Pace: Pan ~12–16 cm/s | Camera snaps every ~4s ONLY when ≥18% of pixels change"
     },
     "gemini-3.5-flash-lite": {
       label: "Gemini 3.5 Flash Lite (15 RPM / 500 RPD)",
+      minSnapGapMs: 4200,
       batchIntervalMs: 4600,
-      maxBatchSize: 3,
-      maxPanCmPerSec: 18,
-      maxGyroDegPerSec: 65,
-      guideText: "📏 Batch Mode (3 frames/call): Pause ~0.4s on each area to snap | Quota: 15 RPM / 500 RPD"
-    },
-    "gemini-3.1-flash-lite": {
-      label: "Gemini 3.1 Flash Lite (15 RPM / 500 RPD)",
-      batchIntervalMs: 4600,
-      maxBatchSize: 3,
-      maxPanCmPerSec: 18,
-      maxGyroDegPerSec: 65,
-      guideText: "📏 Batch Mode (3 frames/call): Pause ~0.4s on each area to snap | Quota: 15 RPM / 500 RPD"
-    },
-    "gemma-4-26b-a4b-it": {
-      label: "Gemma 4 26B MoE Vision (30 RPM / 14.4K RPD)",
-      batchIntervalMs: 3200,
-      maxBatchSize: 3,
-      maxPanCmPerSec: 24,
-      maxGyroDegPerSec: 80,
-      guideText: "⚡ High-Quota Gemma 4 26B: Pause briefly on each item to snap | Quota: 30 RPM / 14,400 RPD"
-    },
-    "gemma-4-31b-it": {
-      label: "Gemma 4 31B Vision (30 RPM / 14.4K RPD)",
-      batchIntervalMs: 3500,
-      maxBatchSize: 3,
-      maxPanCmPerSec: 22,
-      maxGyroDegPerSec: 75,
-      guideText: "⚡ High-Quota Gemma 4 31B: Pause briefly on each item to snap | Quota: 30 RPM / 14,400 RPD"
-    },
-    "gemini-3.6-flash": {
-      label: "Gemini 3.6 Flash (5 RPM / 20 RPD)",
-      batchIntervalMs: 11500,
-      maxBatchSize: 4,
-      maxPanCmPerSec: 15,
-      maxGyroDegPerSec: 55,
-      guideText: "⚠️ 5 RPM Quota: Snaps views locally & batches up to 4 frames every 11.5s to protect quota"
-    },
-    "gemini-2.5-flash-lite": {
-      label: "Gemini 2.5 Flash Lite (10 RPM / 20 RPD)",
-      batchIntervalMs: 6200,
       maxBatchSize: 3,
       maxPanCmPerSec: 16,
       maxGyroDegPerSec: 60,
-      guideText: "📏 Batch Mode (3 frames/call): Snaps views locally & syncs every 6s | Quota: 10 RPM"
+      guideText: "📏 Synced Pace: Pan ~12–15 cm/s | Snaps every ~4.2s when ≥18% pixels change (15 RPM / 500 RPD)"
+    },
+    "gemini-3.1-flash-lite": {
+      label: "Gemini 3.1 Flash Lite (15 RPM / 500 RPD)",
+      minSnapGapMs: 4200,
+      batchIntervalMs: 4600,
+      maxBatchSize: 3,
+      maxPanCmPerSec: 16,
+      maxGyroDegPerSec: 60,
+      guideText: "📏 Synced Pace: Pan ~12–15 cm/s | Snaps every ~4.2s when ≥18% pixels change (15 RPM / 500 RPD)"
+    },
+    "gemma-4-26b-a4b-it": {
+      label: "Gemma 4 26B MoE Vision (30 RPM / 14.4K RPD)",
+      minSnapGapMs: 3600,
+      batchIntervalMs: 3600,
+      maxBatchSize: 3,
+      maxPanCmPerSec: 20,
+      maxGyroDegPerSec: 70,
+      guideText: "⚡ High-Quota Gemma 4 26B: Pan ~15–20 cm/s | Snaps every ~3.6s when ≥18% pixels change"
+    },
+    "gemma-4-31b-it": {
+      label: "Gemma 4 31B Vision (30 RPM / 14.4K RPD)",
+      minSnapGapMs: 3800,
+      batchIntervalMs: 3800,
+      maxBatchSize: 3,
+      maxPanCmPerSec: 18,
+      maxGyroDegPerSec: 68,
+      guideText: "⚡ High-Quota Gemma 4 31B: Pan ~15–18 cm/s | Snaps every ~3.8s when ≥18% pixels change"
+    },
+    "gemini-3.6-flash": {
+      label: "Gemini 3.6 Flash (5 RPM / 20 RPD)",
+      minSnapGapMs: 5500,
+      batchIntervalMs: 11500,
+      maxBatchSize: 4,
+      maxPanCmPerSec: 12,
+      maxGyroDegPerSec: 50,
+      guideText: "⚠️ 5 RPM Quota: Snaps unique views every 5.5s & batches up to 4 frames per call"
+    },
+    "gemini-2.5-flash-lite": {
+      label: "Gemini 2.5 Flash Lite (10 RPM / 20 RPD)",
+      minSnapGapMs: 4500,
+      batchIntervalMs: 6000,
+      maxBatchSize: 3,
+      maxPanCmPerSec: 15,
+      maxGyroDegPerSec: 55,
+      guideText: "📏 Batch Mode: Snaps unique views every ~4.5s when ≥18% pixels change"
     },
     "groq-llama4": {
       label: "Groq LPU Llama-4-Scout (30 RPM)",
-      batchIntervalMs: 3000,
+      minSnapGapMs: 3500,
+      batchIntervalMs: 3500,
       maxBatchSize: 1,
-      maxPanCmPerSec: 25,
-      maxGyroDegPerSec: 85,
-      guideText: "⚡ Ultra-Fast Groq LPU: Pause ~0.4s per view | Quota: 30 RPM"
+      maxPanCmPerSec: 20,
+      maxGyroDegPerSec: 75,
+      guideText: "⚡ Groq LPU: Snaps unique views every ~3.5s when ≥18% pixels change"
     }
   },
 
@@ -133,21 +141,20 @@ window.CloudVisionAndPrice = {
     return { provider: `${testModel} (Verified Active)` };
   },
 
-  // Prompt supporting 1 to 4 batched frames in a SINGLE API request with frame-specific user voice notes
   getBatchVisionPrompt(framesBatch, countryName) {
     const frameDescriptions = framesBatch.map((f, i) => {
       const notes = f.voiceNotes && f.voiceNotes.length > 0
         ? `User spoken notes during this frame: "${f.voiceNotes.join("; ")}"`
-        : "No user spoken notes during this frame.";
+        : "No user override notes (default: count all items as belonging to the user).";
       return `Image #${i + 1} has frame_ref="${f.frameRef}" (${f.filename}). ${notes}`;
     }).join("\n");
 
     return `You are a precision insurance contents inventory vision system operating in ${countryName}.
-You are given ${framesBatch.length} sequential camera frame(s) from a room sweep:
+You are given ${framesBatch.length} unique camera frame(s) from a room sweep:
 ${frameDescriptions}
 
 For EACH frame, detect ALL visible books (vertical spines, tilted, or stacked/flat) AND ALL non-book room items (beds, tables, desks, chairs, shelving units, lamps, monitors, laptops, electronics, framed art, wall portraits, rugs, plants, decor).
-If the user's spoken notes for a frame say "not my shelf", "not mine", or "skip", set "excluded_by_user": true for that frame.
+By default, all items belong to the policyholder unless their spoken notes explicitly say "not my shelf", "not mine", or "exclude".
 If the user's spoken notes say an artwork is a "print" or "original", set "user_art_note": "print" or "original".
 
 Return ONLY valid JSON matching this exact structure:
@@ -173,7 +180,7 @@ Return ONLY valid JSON matching this exact structure:
       "items": [
         {
           "category": "shelving | furniture | lighting | electronics | framed_art | rug | decor",
-          "description": "Concise visual description (e.g., Wooden Bed Frame, Work Table, Framed Wall Picture)",
+          "description": "Concise visual description (e.g., Wooden Bed Frame, Study Table, Framed Wall Picture)",
           "brand_model": "Only if legible on item, else empty string",
           "bbox_2d": [50, 100, 900, 850],
           "dimensions_cm": { "w": 150, "h": 90, "d": 200 },
@@ -197,7 +204,6 @@ CRITICAL RULES:
 4. bbox_2d coordinates must be normalized integers from 0 to 1000 [ymin, xmin, ymax, xmax].`;
   },
 
-  // Sends 1 to 3 queued frames in a SINGLE HTTP request to cut API rate limit consumption by up to 3x
   async analyzeKeyframeBatch(framesBatch, apiKey, modelChoice, countryName) {
     const t0 = performance.now();
     const cleanKey = this.sanitizeApiKey(apiKey);
@@ -207,7 +213,6 @@ CRITICAL RULES:
     const prompt = this.getBatchVisionPrompt(framesBatch, countryName);
 
     if (cleanKey.startsWith("gsk_") || modelChoice === "groq-llama4") {
-      // Groq supports 1 image per message; process first frame in batch
       const singleRes = await this.callGroqVision(framesBatch[0].base64, cleanKey, prompt);
       this.lastUsedModel = "groq-llama4-scout";
       this.recordVisionLatency(performance.now() - t0);
@@ -241,7 +246,7 @@ CRITICAL RULES:
     let lastErr = null;
     for (const modelName of modelsToTry) {
       try {
-        const rawRes = await this.callGeminiBatchVisionWithTimeout(framesBatch, cleanKey, modelName, prompt, 22000);
+        const rawRes = await this.callGeminiBatchVisionWithTimeout(framesBatch, cleanKey, modelName, prompt, 18000);
         this.lastUsedModel = modelName;
         this.recordVisionLatency(performance.now() - t0);
         return this.normalizeBatchResponse(rawRes, framesBatch);
@@ -260,7 +265,6 @@ CRITICAL RULES:
     if (Array.isArray(rawRes.frames) && rawRes.frames.length > 0) {
       return rawRes;
     }
-    // Fallback if model returned single-frame schema
     return {
       frames: [
         {
@@ -292,7 +296,6 @@ CRITICAL RULES:
         }
       }
 
-      // Pack prompt + all batched frames into a single contents payload (counts as 1 RPM request!)
       const parts = [{ text: prompt }];
       for (const f of framesBatch) {
         parts.push({ text: `Frame Reference: ${f.frameRef}` });
@@ -365,7 +368,6 @@ CRITICAL RULES:
     this.stageLatenciesMs.keyframe_vision_avg_ms = Math.round(sum / this.visionCallTimes.length);
   },
 
-  // Deduplicates across frames AND filters out any frame marked "Not Mine / Excluded" by the user
   deduplicateInventory(rawBooks, rawItems, excludedFrameRefs = new Set()) {
     const t0 = performance.now();
     const uniqueBooks = [];
@@ -619,7 +621,7 @@ CRITICAL RULES:
             converted: false
           };
           book.used_value = {
-            amount: Number((localNew => computedNew * 0.54)().toFixed(2)),
+            amount: Number((computedNew * 0.54).toFixed(2)),
             source: "OpenLibrary Used Market Index",
             url: workUrl,
             retrieved_at: nowIso,
