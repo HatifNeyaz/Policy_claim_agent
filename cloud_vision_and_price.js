@@ -8,63 +8,71 @@ window.CloudVisionAndPrice = {
   lastUsedModel: "gemini-3.5-flash-lite",
   roundRobinIdx: 0,
 
-  // Model-specific rate limit & pan speed pacing profiles
+  // Model-specific rate limit & batch cooldown profiles
   MODEL_PACING_PROFILES: {
     "auto-multi-pool": {
       label: "Smart Multi-Pool (3.5 Lite + 3.1 Lite + Gemma 4 26B)",
-      intervalMs: 4200,
-      maxPanCmPerSec: 18,
-      maxGyroDegPerSec: 65,
-      guideText: "📏 Target Pan Speed: ~15–18 cm/s (1 shelf every 4s) | Quota: 15,400 RPD"
+      batchIntervalMs: 4000,
+      maxBatchSize: 3,
+      maxPanCmPerSec: 22,
+      maxGyroDegPerSec: 75,
+      guideText: "📏 Multi-Frame Batching Active: Pause ~0.4s per view to snap locally; up to 3 views sent per API call!"
     },
     "gemini-3.5-flash-lite": {
       label: "Gemini 3.5 Flash Lite (15 RPM / 500 RPD)",
-      intervalMs: 5200,
-      maxPanCmPerSec: 14,
-      maxGyroDegPerSec: 55,
-      guideText: "📏 Target Pan Speed: ~12–15 cm/s (1 shelf every 5s) | Quota: 15 RPM / 500 RPD"
+      batchIntervalMs: 4600,
+      maxBatchSize: 3,
+      maxPanCmPerSec: 18,
+      maxGyroDegPerSec: 65,
+      guideText: "📏 Batch Mode (3 frames/call): Pause ~0.4s on each area to snap | Quota: 15 RPM / 500 RPD"
     },
     "gemini-3.1-flash-lite": {
       label: "Gemini 3.1 Flash Lite (15 RPM / 500 RPD)",
-      intervalMs: 5200,
-      maxPanCmPerSec: 14,
-      maxGyroDegPerSec: 55,
-      guideText: "📏 Target Pan Speed: ~12–15 cm/s (1 shelf every 5s) | Quota: 15 RPM / 500 RPD"
+      batchIntervalMs: 4600,
+      maxBatchSize: 3,
+      maxPanCmPerSec: 18,
+      maxGyroDegPerSec: 65,
+      guideText: "📏 Batch Mode (3 frames/call): Pause ~0.4s on each area to snap | Quota: 15 RPM / 500 RPD"
     },
     "gemma-4-26b-a4b-it": {
       label: "Gemma 4 26B MoE Vision (30 RPM / 14.4K RPD)",
-      intervalMs: 3400,
-      maxPanCmPerSec: 22,
+      batchIntervalMs: 3200,
+      maxBatchSize: 3,
+      maxPanCmPerSec: 24,
       maxGyroDegPerSec: 80,
-      guideText: "📏 Target Pan Speed: ~20–22 cm/s (1 shelf every 3.5s) | Quota: 30 RPM / 14.4K RPD"
+      guideText: "⚡ High-Quota Gemma 4 26B: Pause briefly on each item to snap | Quota: 30 RPM / 14,400 RPD"
     },
     "gemma-4-31b-it": {
       label: "Gemma 4 31B Vision (30 RPM / 14.4K RPD)",
-      intervalMs: 3800,
-      maxPanCmPerSec: 20,
+      batchIntervalMs: 3500,
+      maxBatchSize: 3,
+      maxPanCmPerSec: 22,
       maxGyroDegPerSec: 75,
-      guideText: "📏 Target Pan Speed: ~18–20 cm/s (1 shelf every 4s) | Quota: 30 RPM / 14.4K RPD"
+      guideText: "⚡ High-Quota Gemma 4 31B: Pause briefly on each item to snap | Quota: 30 RPM / 14,400 RPD"
     },
     "gemini-3.6-flash": {
       label: "Gemini 3.6 Flash (5 RPM / 20 RPD)",
-      intervalMs: 12500,
-      maxPanCmPerSec: 6,
-      maxGyroDegPerSec: 30,
-      guideText: "⚠️ Slow Quota (5 RPM): Pan VERY slowly (~6 cm/s, hold 12s per shelf)"
+      batchIntervalMs: 11500,
+      maxBatchSize: 4,
+      maxPanCmPerSec: 15,
+      maxGyroDegPerSec: 55,
+      guideText: "⚠️ 5 RPM Quota: Snaps views locally & batches up to 4 frames every 11.5s to protect quota"
     },
     "gemini-2.5-flash-lite": {
       label: "Gemini 2.5 Flash Lite (10 RPM / 20 RPD)",
-      intervalMs: 6800,
-      maxPanCmPerSec: 11,
-      maxGyroDegPerSec: 45,
-      guideText: "📏 Target Pan Speed: ~10–12 cm/s (1 shelf every 7s) | Quota: 10 RPM / 20 RPD"
+      batchIntervalMs: 6200,
+      maxBatchSize: 3,
+      maxPanCmPerSec: 16,
+      maxGyroDegPerSec: 60,
+      guideText: "📏 Batch Mode (3 frames/call): Snaps views locally & syncs every 6s | Quota: 10 RPM"
     },
     "groq-llama4": {
       label: "Groq LPU Llama-4-Scout (30 RPM)",
-      intervalMs: 3200,
-      maxPanCmPerSec: 24,
+      batchIntervalMs: 3000,
+      maxBatchSize: 1,
+      maxPanCmPerSec: 25,
       maxGyroDegPerSec: 85,
-      guideText: "⚡ Ultra-Fast LPU: Pan ~22–25 cm/s (1 shelf every 3s) | Quota: 30 RPM"
+      guideText: "⚡ Ultra-Fast Groq LPU: Pause ~0.4s per view | Quota: 30 RPM"
     }
   },
 
@@ -72,7 +80,6 @@ window.CloudVisionAndPrice = {
     return this.MODEL_PACING_PROFILES[modelChoice] || this.MODEL_PACING_PROFILES["auto-multi-pool"];
   },
 
-  // Preserves exact API key without enforcing prefix or length rules
   sanitizeApiKey(rawKey) {
     if (!rawKey) return "";
     let cleaned = String(rawKey).trim();
@@ -83,7 +90,6 @@ window.CloudVisionAndPrice = {
     return cleaned.trim();
   },
 
-  // Verifies endpoint access with zero arbitrary key format rules
   async testApiKeyConnection(rawKey, modelChoice) {
     const cleanKey = this.sanitizeApiKey(rawKey);
     if (!cleanKey) {
@@ -127,70 +133,89 @@ window.CloudVisionAndPrice = {
     return { provider: `${testModel} (Verified Active)` };
   },
 
-  getVisionPrompt(countryName) {
+  // Prompt supporting 1 to 4 batched frames in a SINGLE API request with frame-specific user voice notes
+  getBatchVisionPrompt(framesBatch, countryName) {
+    const frameDescriptions = framesBatch.map((f, i) => {
+      const notes = f.voiceNotes && f.voiceNotes.length > 0
+        ? `User spoken notes during this frame: "${f.voiceNotes.join("; ")}"`
+        : "No user spoken notes during this frame.";
+      return `Image #${i + 1} has frame_ref="${f.frameRef}" (${f.filename}). ${notes}`;
+    }).join("\n");
+
     return `You are a precision insurance contents inventory vision system operating in ${countryName}.
-Analyze this camera frame and detect ALL visible books (vertical spines, tilted books, or stacked/flat books) AND ALL non-book room items (shelving units, desks, chairs, tables, lamps, monitors, laptops, electronics, framed art, portraits, rugs, plants, decor).
+You are given ${framesBatch.length} sequential camera frame(s) from a room sweep:
+${frameDescriptions}
+
+For EACH frame, detect ALL visible books (vertical spines, tilted, or stacked/flat) AND ALL non-book room items (beds, tables, desks, chairs, shelving units, lamps, monitors, laptops, electronics, framed art, wall portraits, rugs, plants, decor).
+If the user's spoken notes for a frame say "not my shelf", "not mine", or "skip", set "excluded_by_user": true for that frame.
+If the user's spoken notes say an artwork is a "print" or "original", set "user_art_note": "print" or "original".
+
 Return ONLY valid JSON matching this exact structure:
 {
-  "shelf_id": "Shelf_1",
-  "books": [
+  "frames": [
     {
-      "position": 1,
-      "status": "identified | unidentified | needs_appraisal",
-      "title": "Exact spine/cover title if clearly human-legible, else empty string",
-      "author": "Author on spine if legible, else empty string",
-      "publisher": "Publisher if legible, else empty string",
-      "edition": "Edition if visible, else empty string",
-      "bbox_2d": [120, 210, 480, 265],
-      "id_confidence": 0.92,
-      "rare_or_signed_reason": "Empty unless looks antiquarian, leather-bound pre-1970, or signed"
-    }
-  ],
-  "items": [
-    {
-      "category": "shelving | furniture | lighting | electronics | framed_art | rug | decor",
-      "description": "Concise material and visual description (e.g., Wooden 4-tier bookcase, Black desk lamp, Laptop)",
-      "brand_model": "Only if legible on item, else empty string",
-      "bbox_2d": [50, 100, 900, 850],
-      "dimensions_cm": { "w": 80, "h": 180, "d": 30 },
-      "is_art_or_portrait": false,
-      "confidence": 0.90
+      "frame_ref": "evidence_frames/frame_001.jpg",
+      "shelf_id": "Shelf_1",
+      "excluded_by_user": false,
+      "books": [
+        {
+          "position": 1,
+          "status": "identified | unidentified | needs_appraisal",
+          "title": "Exact spine/cover title if clearly human-legible, else empty string",
+          "author": "Author on spine if legible, else empty string",
+          "publisher": "Publisher if legible, else empty string",
+          "edition": "Edition if visible, else empty string",
+          "bbox_2d": [120, 210, 480, 265],
+          "id_confidence": 0.92,
+          "rare_or_signed_reason": "Empty unless looks antiquarian, leather-bound pre-1970, or signed"
+        }
+      ],
+      "items": [
+        {
+          "category": "shelving | furniture | lighting | electronics | framed_art | rug | decor",
+          "description": "Concise visual description (e.g., Wooden Bed Frame, Work Table, Framed Wall Picture)",
+          "brand_model": "Only if legible on item, else empty string",
+          "bbox_2d": [50, 100, 900, 850],
+          "dimensions_cm": { "w": 150, "h": 90, "d": 200 },
+          "is_art_or_portrait": false,
+          "user_art_note": "",
+          "confidence": 0.90
+        }
+      ]
     }
   ],
   "room_estimate": {
     "estimated_length_m": 4.2,
     "estimated_width_m": 3.5,
     "shape_note": "rectangular"
-  },
-  "capture_feedback": "Short spoken guidance if glare, blur, or cut-off shelf is noticed, else empty string"
+  }
 }
 CRITICAL RULES:
-1. Count EVERY visible book (whether vertical on a shelf, lying flat, or held in view).
-2. Count EVERY visible non-book object in the room (bookshelves, tables, chairs, electronics, lamps, wall art, rugs, decor).
-3. NEVER guess a title for a blurry or unreadable spine. If unreadable, set status="unidentified", title="", author="", edition="".
+1. Analyze EVERY image in the batch and tag its results with its exact "frame_ref".
+2. Count EVERY visible non-book item (beds, tables, chairs, wall pictures, shelves, lamps, electronics, rugs).
+3. NEVER guess a title for a blurry or unreadable book spine (set status="unidentified", title="", author="").
 4. bbox_2d coordinates must be normalized integers from 0 to 1000 [ymin, xmin, ymax, xmax].`;
   },
 
-  // Multi-Model Vision Call with Round-Robin Load Balancing & Instant Failover
-  async analyzeKeyframe(base64Jpeg, apiKey, modelChoice, countryName) {
+  // Sends 1 to 3 queued frames in a SINGLE HTTP request to cut API rate limit consumption by up to 3x
+  async analyzeKeyframeBatch(framesBatch, apiKey, modelChoice, countryName) {
     const t0 = performance.now();
     const cleanKey = this.sanitizeApiKey(apiKey);
     if (!cleanKey) {
       throw new Error("API key is empty. Please paste your key in the top bar.");
     }
-    const prompt = this.getVisionPrompt(countryName);
+    const prompt = this.getBatchVisionPrompt(framesBatch, countryName);
 
     if (cleanKey.startsWith("gsk_") || modelChoice === "groq-llama4") {
-      const res = await this.callGroqVision(base64Jpeg, cleanKey, prompt);
+      // Groq supports 1 image per message; process first frame in batch
+      const singleRes = await this.callGroqVision(framesBatch[0].base64, cleanKey, prompt);
       this.lastUsedModel = "groq-llama4-scout";
       this.recordVisionLatency(performance.now() - t0);
-      return res;
+      return this.normalizeBatchResponse(singleRes, framesBatch);
     }
 
-    // Build failover order based on user dropdown selection
     let modelsToTry = [];
     if (modelChoice === "auto-multi-pool") {
-      // Rotate starting model across high-quota pools so no single model hits its RPM limit
       const highQuotaPool = [
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
@@ -216,12 +241,12 @@ CRITICAL RULES:
     let lastErr = null;
     for (const modelName of modelsToTry) {
       try {
-        const res = await this.callGeminiVisionWithTimeout(base64Jpeg, cleanKey, modelName, prompt, 18000);
+        const rawRes = await this.callGeminiBatchVisionWithTimeout(framesBatch, cleanKey, modelName, prompt, 22000);
         this.lastUsedModel = modelName;
         this.recordVisionLatency(performance.now() - t0);
-        return res;
+        return this.normalizeBatchResponse(rawRes, framesBatch);
       } catch (err) {
-        console.warn(`Model ${modelName} limit/error (${err.message}), failing over to next pool...`);
+        console.warn(`Model ${modelName} limit/error (${err.message}), failing over...`);
         lastErr = err;
         if (err.message.includes("API key not valid") || err.message.includes("API Key not found")) {
           break;
@@ -231,7 +256,26 @@ CRITICAL RULES:
     throw lastErr || new Error("All vision models in pool failed.");
   },
 
-  async callGeminiVisionWithTimeout(base64Jpeg, cleanKey, modelName, prompt, timeoutMs) {
+  normalizeBatchResponse(rawRes, framesBatch) {
+    if (Array.isArray(rawRes.frames) && rawRes.frames.length > 0) {
+      return rawRes;
+    }
+    // Fallback if model returned single-frame schema
+    return {
+      frames: [
+        {
+          frame_ref: framesBatch[0]?.frameRef || "evidence_frames/frame_001.jpg",
+          shelf_id: rawRes.shelf_id || "Shelf_1",
+          excluded_by_user: false,
+          books: rawRes.books || [],
+          items: rawRes.items || []
+        }
+      ],
+      room_estimate: rawRes.room_estimate || { estimated_length_m: 4.2, estimated_width_m: 3.5, shape_note: "rectangular" }
+    };
+  },
+
+  async callGeminiBatchVisionWithTimeout(framesBatch, cleanKey, modelName, prompt, timeoutMs) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -241,12 +285,18 @@ CRITICAL RULES:
       const generationConfig = {
         temperature: 0.1
       };
-      // Gemini models support responseMimeType and thinkingBudget: 0; Gemma models output JSON from prompt directly
       if (!isGemma) {
         generationConfig.responseMimeType = "application/json";
         if (modelName.includes("flash")) {
           generationConfig.thinkingConfig = { thinkingBudget: 0 };
         }
+      }
+
+      // Pack prompt + all batched frames into a single contents payload (counts as 1 RPM request!)
+      const parts = [{ text: prompt }];
+      for (const f of framesBatch) {
+        parts.push({ text: `Frame Reference: ${f.frameRef}` });
+        parts.push({ inline_data: { mime_type: "image/jpeg", data: f.base64 } });
       }
 
       const response = await fetch(url, {
@@ -257,12 +307,7 @@ CRITICAL RULES:
         },
         signal: controller.signal,
         body: JSON.stringify({
-          contents: [{
-            parts: [
-              { text: prompt },
-              { inline_data: { mime_type: "image/jpeg", data: base64Jpeg } }
-            ]
-          }],
+          contents: [{ parts }],
           generationConfig
         })
       });
@@ -277,11 +322,11 @@ CRITICAL RULES:
       }
 
       const data = await response.json();
-      const parts = data?.candidates?.[0]?.content?.parts || [];
-      const rawText = parts
+      const resParts = data?.candidates?.[0]?.content?.parts || [];
+      const rawText = resParts
         .filter(p => !p.thought && typeof p.text === "string")
         .map(p => p.text)
-        .join("\n") || parts?.[0]?.text || "{}";
+        .join("\n") || resParts?.[0]?.text || "{}";
 
       return this.safeParseJson(rawText);
     } finally {
@@ -320,11 +365,14 @@ CRITICAL RULES:
     this.stageLatenciesMs.keyframe_vision_avg_ms = Math.round(sum / this.visionCallTimes.length);
   },
 
-  deduplicateInventory(rawBooks, rawItems) {
+  // Deduplicates across frames AND filters out any frame marked "Not Mine / Excluded" by the user
+  deduplicateInventory(rawBooks, rawItems, excludedFrameRefs = new Set()) {
     const t0 = performance.now();
     const uniqueBooks = [];
 
     for (const b of rawBooks) {
+      if (excludedFrameRefs.has(b.frame_ref) || b.excluded_by_user) continue;
+
       if (b.status === "identified" && (!b.title || b.id_confidence < 0.62)) {
         b.status = "unidentified";
         b.title = "";
@@ -358,6 +406,8 @@ CRITICAL RULES:
 
     const uniqueItems = [];
     for (const item of rawItems) {
+      if (excludedFrameRefs.has(item.frame_ref) || item.excluded_by_user) continue;
+
       const existing = uniqueItems.find(
         u => u.category === item.category && this.stringSimilarity(u.description, item.description) > 0.70
       );
@@ -368,7 +418,6 @@ CRITICAL RULES:
     return { uniqueBooks, uniqueItems };
   },
 
-  // Multi-Tier Sourced Book & Item Pricing Engine (Eliminates flat 1350/753 fallback)
   async priceAllInventory(books, items, primaryLocale, secondaryLocale) {
     const t0 = performance.now();
     const [countryCode, currencyCode] = primaryLocale.split("|");
@@ -383,7 +432,6 @@ CRITICAL RULES:
 
     const identifiedBooks = books.filter(b => b.status === "identified" && b.title);
 
-    // Step 1: Query Google Books (scanning 10 editions + paid-ebooks filter) & Open Library in batches of 6
     for (let i = 0; i < identifiedBooks.length; i += 6) {
       const batch = identifiedBooks.slice(i, i + 6);
       await Promise.all(
@@ -393,7 +441,6 @@ CRITICAL RULES:
       );
     }
 
-    // Step 2: Build 10-book Secondary Country comparison table with real locale prices
     const secondaryComparison = [];
     const sample10 = identifiedBooks.slice(0, 10);
     for (let i = 0; i < sample10.length; i++) {
@@ -415,7 +462,6 @@ CRITICAL RULES:
       });
     }
 
-    // Step 3: Price non-book items
     for (const item of items) {
       this.priceNonBookItem(item, countryCode, currencyCode, convertAmount, nowIso);
     }
@@ -430,7 +476,6 @@ CRITICAL RULES:
       const cleanAuthor = (book.author || "").replace(/[^\w\s]/g, " ").trim();
       const queryStr = encodeURIComponent(`${cleanTitle} ${cleanAuthor}`.trim());
 
-      // 1. Primary Google Books Query: Fetch up to 8 editions and scan ALL of them for retailPrice or listPrice
       const gbUrl = `https://www.googleapis.com/books/v1/volumes?q=${queryStr}&maxResults=8&country=${countryCode}`;
       const res = await fetch(gbUrl);
       let matchedVol = null;
@@ -441,14 +486,12 @@ CRITICAL RULES:
         const items = data.items || [];
         if (items.length > 0) {
           matchedVol = items[0];
-          // Search across all returned editions for one that carries a live retailPrice or listPrice
           pricedVol = items.find(
             v => (v.saleInfo?.retailPrice?.amount > 0) || (v.saleInfo?.listPrice?.amount > 0)
           );
         }
       }
 
-      // 2. If default print editions had NOT_FOR_SALE, query Google Books with filter=paid-ebooks in user's country
       if (!pricedVol) {
         const paidUrl = `https://www.googleapis.com/books/v1/volumes?q=${queryStr}&filter=paid-ebooks&maxResults=4&country=${countryCode}`;
         const paidRes = await fetch(paidUrl).catch(() => null);
@@ -477,21 +520,18 @@ CRITICAL RULES:
         const infoUrl = info.infoLink || `https://books.google.com/books?id=${activeVol.id}`;
         const pubYear = parseInt((info.publishedDate || "").slice(0, 4), 10);
 
-        // Flag pre-1970 antiquarian books for specialist appraisal
-        if (pubYear && pubYear < 1970) {
+        if (pubYear && pubYear < 1970 && !book.user_forced_standard) {
           book.status = "needs_appraisal";
           book.rare_or_signed_reason = `Published in ${pubYear} (pre-1970 antiquarian verification required)`;
           return;
         }
 
-        // Case A: Google Books returned an explicit live price (listPrice or retailPrice)
         const priceObj = (sale.listPrice?.amount > 0) ? sale.listPrice : sale.retailPrice;
         if (priceObj && priceObj.amount > 0) {
           const rawAmt = priceObj.amount;
           const rawCurr = priceObj.currencyCode || currencyCode;
           const converted = rawCurr !== currencyCode;
           const finalNew = converted ? convertAmount(rawAmt, rawCurr, currencyCode) : Number(rawAmt.toFixed(2));
-          // Used market ratio varies realistically by publication age (50% to 62%)
           const ageFactor = pubYear && pubYear > 2018 ? 0.62 : pubYear && pubYear < 2005 ? 0.48 : 0.55;
           const finalUsed = Number((finalNew * ageFactor).toFixed(2));
 
@@ -512,8 +552,6 @@ CRITICAL RULES:
           return;
         }
 
-        // Case B: Physical book catalog record without direct Play Store price ->
-        // Compute volume-specific retail valuation from real pageCount, category, spine dimensions & locale market tier
         const pages = info.pageCount || Math.round((book.spine_thickness_cm || 2.5) * 115);
         const cats = (info.categories || []).join(" ").toLowerCase();
         const isTechnicalOrAcademic = /computer|science|engineering|medical|law|mathematics|economics|business|textbook/.test(cats);
@@ -549,7 +587,6 @@ CRITICAL RULES:
         return;
       }
 
-      // 3. Open Library Search API Fallback (Uses real median page count & edition count)
       const olUrl = `https://openlibrary.org/search.json?title=${encodeURIComponent(cleanTitle)}&limit=1`;
       const olRes = await fetch(olUrl);
       if (olRes.ok) {
@@ -582,7 +619,7 @@ CRITICAL RULES:
             converted: false
           };
           book.used_value = {
-            amount: Number((computedNew * 0.54).toFixed(2)),
+            amount: Number((localNew => computedNew * 0.54)().toFixed(2)),
             source: "OpenLibrary Used Market Index",
             url: workUrl,
             retrieved_at: nowIso,
@@ -595,29 +632,24 @@ CRITICAL RULES:
     }
   },
 
-  // Calculates distinct, realistic book prices based on real page count, binding, subject category & regional MRP structure
   computeVolumeSpecificMarketPrice({ pages, isTechnicalOrAcademic, isHardcover, pubYear, title, countryCode, currencyCode, convertAmount, bookIdx }) {
     const clampedPages = Math.min(1200, Math.max(90, pages || 260));
-    // Deterministic hash offset from title characters so books with similar page counts still reflect distinct publisher MRPs
     let titleHash = 0;
     const str = (title || "") + String(bookIdx);
     for (let i = 0; i < str.length; i++) {
       titleHash = (titleHash * 31 + str.charCodeAt(i)) % 1000;
     }
-    const varianceFactor = 0.88 + (titleHash / 1000) * 0.28; // 0.88x to 1.16x
+    const varianceFactor = 0.88 + (titleHash / 1000) * 0.28;
 
-    // Regional pricing for India (INR MRP structure: trade paperbacks ₹250–₹599, hardcovers/tech ₹650–₹1,499)
     if (currencyCode === "INR") {
       let baseInr = 195 + clampedPages * 0.95;
       if (isTechnicalOrAcademic) baseInr *= 1.45;
       if (isHardcover) baseInr += 180;
       if (pubYear && pubYear >= 2022) baseInr *= 1.08;
       const rawInr = baseInr * varianceFactor;
-      // Round to realistic Indian bookstore MRP endings (e.g., ₹299, ₹399, ₹450, ₹595, ₹799)
       return Math.round(rawInr / 5) * 5 - 1;
     }
 
-    // US / International USD base pricing ($11.99 to $39.99) converted to target currency
     let baseUsd = 9.50 + clampedPages * 0.028;
     if (isTechnicalOrAcademic) baseUsd *= 1.65;
     if (isHardcover) baseUsd += 7.50;
@@ -627,7 +659,7 @@ CRITICAL RULES:
 
   priceNonBookItem(item, countryCode, currencyCode, convertAmount, nowIso) {
     if (item.category === "framed_art" || item.is_art_or_portrait) {
-      if (item.user_confirmed_print) {
+      if (item.user_confirmed_print || item.user_art_note === "print") {
         item.status = "range";
         item.replacement_cost = {
           low: convertAmount(25, "USD", currencyCode),
@@ -696,7 +728,7 @@ CRITICAL RULES:
       return JSON.parse(cleaned);
     } catch (e) {
       console.warn("JSON parse fallback triggered on text:", text);
-      return { books: [], items: [] };
+      return { frames: [], books: [], items: [] };
     }
   }
 };
