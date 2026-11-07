@@ -18,7 +18,7 @@
 
     <div class="config-grid">
       <div class="input-group">
-        <label for="apiKeyInput">API Key (Gemini / Groq)</label>
+        <label for="apiKeyInput">API Key (Google AI Studio or Groq)</label>
         <div class="dual-num">
           <input type="password" id="apiKeyInput" placeholder="Paste your API key here..." autocomplete="off" spellcheck="false" />
           <button type="button" id="toggleKeyVisBtn" class="btn-secondary btn-sm" title="Show or Hide API Key">👁️</button>
@@ -27,12 +27,16 @@
       </div>
 
       <div class="input-group">
-        <label for="modelSelect">Vision Engine & Failover</label>
+        <label for="modelSelect">Active Vision Model & Quota Pool</label>
         <select id="modelSelect">
-          <option value="auto-gemini">Auto-Failover: Gemini 2.5 Flash ➔ 2.0 Flash</option>
-          <option value="gemini-2.0-flash">Fast Mode: Gemini 2.0 Flash Only</option>
-          <option value="gemini-2.5-flash-lite">Ultra-Lite: Gemini 2.5 Flash-Lite</option>
-          <option value="groq-llama4">Alternative: Groq Llama-4-Scout Vision</option>
+          <option value="auto-multi-pool">⚡ Smart Auto-Balancer (3.5 Lite ➔ 3.1 Lite ➔ Gemma 4 26B | 15K+ RPD)</option>
+          <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (15 RPM / 500 RPD — Recommended)</option>
+          <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (15 RPM / 500 RPD — High Volume)</option>
+          <option value="gemma-4-26b-a4b-it">Gemma 4 26B MoE Vision (30 RPM / 14,400 RPD — Fast & Huge Quota)</option>
+          <option value="gemma-4-31b-it">Gemma 4 31B Dense Vision (30 RPM / 14,400 RPD — High Quota)</option>
+          <option value="gemini-3.6-flash">Gemini 3.6 Flash (5 RPM / 20 RPD — Low Quota)</option>
+          <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite (10 RPM / 20 RPD)</option>
+          <option value="groq-llama4">Groq LPU: Llama-4-Scout 17B Vision (30 RPM — Uses gsk_ Key)</option>
         </select>
       </div>
 
@@ -79,16 +83,28 @@
     <!-- LEFT / TOP: CAMERA & ON-DEVICE SEGMENTATION VIEWPORT -->
     <section class="viewport-card">
       <div class="hud-bar">
-        <span id="sweepTimer">⏱️ 00:00</span>
+        <span id="sweepTimer" class="hud-pill">⏱️ 00:00</span>
         <span id="sharpnessBadge" class="hud-pill">🎯 Sharpness: --</span>
-        <span id="motionBadge" class="hud-pill">📱 Motion: Steady</span>
+        <span id="motionBadge" class="hud-pill">🧭 Pan Speed: 0 cm/s</span>
         <span id="modelBadge" class="hud-pill">🧠 Edge AI: Ready</span>
       </div>
 
-      <div class="video-container">
+      <!-- DYNAMIC PAN SPEED & CAPTURE PACING BAR -->
+      <div class="pacing-panel">
+        <div class="pacing-row">
+          <span id="panGuideText">📏 <strong>Target Pan Speed:</strong> ~14 cm/s (1 shelf every 5s)</span>
+          <span id="captureStateBadge" class="capture-badge idle">⏸️ Waiting to Start</span>
+        </div>
+        <div class="progress-track" title="Time until next automatic frame capture">
+          <div id="captureProgressBar" class="progress-fill" style="width: 0%;"></div>
+        </div>
+      </div>
+
+      <div class="video-container" id="videoContainer">
         <video id="cameraVideo" playsinline muted></video>
         <canvas id="overlayCanvas"></canvas>
-        <div id="alertBanner" class="alert-banner hidden">⚠️ Slow down! Frame is blurry.</div>
+        <div id="shutterFlash" class="shutter-flash hidden">📸 FRAME CAPTURED</div>
+        <div id="alertBanner" class="alert-banner hidden">⚠️ Slow down! Panning too fast for current model rate limit.</div>
       </div>
 
       <!-- VOICE BANNER -->

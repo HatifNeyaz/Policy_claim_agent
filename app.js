@@ -9,10 +9,13 @@
   let autoCaptureInterval = null;
 
   let gyroSpeedDegPerSec = 0;
+  let currentPanCmPerSec = 0;
   let currentSharpness = 150;
   let isAgentSpeaking = false;
   let skipNextShelfFlag = false;
   let lastKeyframeGray = null;
+  let prevTickGray = null;
+  let lastCaptureTime = 0;
 
   const savedFrames = [];
   const rawBooksBuffer = [];
@@ -37,6 +40,20 @@
     });
   }
 
+  // Update Pan Speed Guidance whenever user switches model in dropdown
+  const modelSelectEl = document.getElementById("modelSelect");
+  function updateModelPacingUI() {
+    if (!modelSelectEl || !window.CloudVisionAndPrice) return;
+    const profile = window.CloudVisionAndPrice.getPacingProfile(modelSelectEl.value);
+    const guideEl = document.getElementById("panGuideText");
+    if (guideEl) {
+      guideEl.textContent = profile.guideText;
+    }
+  }
+  if (modelSelectEl) {
+    modelSelectEl.addEventListener("change", updateModelPacingUI);
+  }
+
   // Show/Hide API Key button
   const toggleKeyVisBtn = document.getElementById("toggleKeyVisBtn");
   if (toggleKeyVisBtn && apiKeyInput) {
@@ -45,7 +62,7 @@
     });
   }
 
-  // 1-Click Test API Key button: simply checks if the API responds
+  // 1-Click Test API Key button
   const testApiKeyBtn = document.getElementById("testApiKeyBtn");
   if (testApiKeyBtn && apiKeyInput) {
     testApiKeyBtn.addEventListener("click", async () => {
@@ -59,7 +76,7 @@
 
       try {
         const info = await window.CloudVisionAndPrice.testApiKeyConnection(sanitized, modelChoice);
-        const msg = `✅ API is working! Connected to ${info.provider}. Ready to start sweep.`;
+        const msg = `✅ Connected! Using ${info.provider}. Ready to start sweep.`;
         if (speechEl) speechEl.textContent = msg;
         alert(msg);
       } catch (err) {
@@ -70,11 +87,47 @@
     });
   }
 
+  // Subtle WebAudio shutter beep so user hears instant confirmation when a frame snaps
+  function playShutterBeep() {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.12);
+    } catch (e) {}
+  }
+
+  // Visual shutter flash on video border & pill
+  function triggerShutterVisual(frameIdx) {
+    playShutterBeep();
+    const container = document.getElementById("videoContainer");
+    const flashBadge = document.getElementById("shutterFlash");
+    if (container) {
+      container.classList.add("flash-border");
+      setTimeout(() => container.classList.remove("flash-border"), 450);
+    }
+    if (flashBadge) {
+      flashBadge.textContent = `📸 FRAME #${frameIdx} CAPTURED`;
+      flashBadge.classList.remove("hidden");
+      setTimeout(() => flashBadge.classList.add("hidden"), 1100);
+    }
+  }
+
   // Initialize On-Device Edge AI
   window.addEventListener("DOMContentLoaded", () => {
     if (window.EdgeSegmentation) {
       window.EdgeSegmentation.init();
     }
+    updateModelPacingUI();
     setupTabs();
     setupSpeechRecognition();
   });
@@ -90,10 +143,10 @@
     }
   });
 
-  // 2D Laplacian Variance Sharpness & Glare Calculator on 320x240 canvas
-  function computeSharpnessAndGlare(videoEl, workCanvas) {
+  // 2D Laplacian Sharpness, Glare & Optical Pan Speed (cm/s) Calculator on 320x240 canvas
+  function computeSharpnessGlareAndPanSpeed(videoEl, workCanvas, prevGray) {
     if (!videoEl || videoEl.readyState < 2 || !workCanvas) {
-      return { sharpness: 65, sharpnessPct: 92, glarePct: 0, grayBuffer: null };
+      return { sharpness: 65, sharpnessPct: 92, glarePct: 0, panCmPerSec: 0, grayBuffer: null };
     }
     const ctx = workCanvas.getContext("2d", { willReadFrequently: true });
     const w = workCanvas.width;
@@ -125,15 +178,31 @@
     const variance = Math.max(0, (sumSq / count) - (mean * mean));
     const sharpnessPct = Math.min(99, Math.round((variance / 45) * 100));
     const glarePct = (glarePixels / (w * h)) * 100;
+
+    // Estimate pan speed in cm/s from both gyroscope and frame-to-frame optical motion
+    let opticalDeltaPct = 0;
+    if (prevGray && prevGray.length === gray.length) {
+      let diff = 0;
+      for (let i = 0; i < gray.length; i += 4) {
+        diff += Math.abs(gray[i] - prevGray[i]);
+      }
+      opticalDeltaPct = (diff / (gray.length / 4) / 255) * 100;
+    }
+    // Convert 250ms optical delta + gyro deg/s into approximate shelf pan speed (cm/s)
+    const gyroCmPerSec = gyroSpeedDegPerSec * 0.42;
+    const opticalCmPerSec = opticalDeltaPct > 1.8 ? opticalDeltaPct * 1.65 : 0;
+    const panCmPerSec = Math.round(Math.max(gyroCmPerSec, opticalCmPerSec));
+
     return {
       sharpness: Math.round(variance),
       sharpnessPct,
       glarePct: Number(glarePct.toFixed(1)),
+      panCmPerSec,
       grayBuffer: gray
     };
   }
 
-  // Checks if camera view has changed by at least 3.5% mean absolute pixel difference
+  // Checks if camera view has changed by at least 3.2% mean absolute pixel difference
   function hasSceneChanged(currentGray, prevGray) {
     if (!currentGray || !prevGray || currentGray.length !== prevGray.length) return true;
     let diffSum = 0;
@@ -141,7 +210,7 @@
       diffSum += Math.abs(currentGray[i] - prevGray[i]);
     }
     const meanDiffPct = (diffSum / (currentGray.length / 4) / 255) * 100;
-    return meanDiffPct >= 3.5;
+    return meanDiffPct >= 3.2;
   }
 
   // Voice Output (Web Speech Synthesis) with Half-Duplex Lock
@@ -151,7 +220,7 @@
     if (!("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = 1.04;
+    utter.rate = 1.08;
     utter.onstart = () => { isAgentSpeaking = true; };
     utter.onend = () => { isAgentSpeaking = false; };
     utter.onerror = () => { isAgentSpeaking = false; };
@@ -263,12 +332,19 @@
   function beginSweepLoop(videoEl) {
     isSweeping = true;
     sweepStartTime = Date.now();
+    lastCaptureTime = Date.now() - 2500;
     document.getElementById("statusDot").classList.add("active");
     document.getElementById("captureKeyframeBtn").disabled = false;
     document.getElementById("finishSweepBtn").disabled = false;
 
+    updateModelPacingUI();
+    const profile = window.CloudVisionAndPrice.getPacingProfile(modelSelectEl.value);
     const [country, currency] = document.getElementById("localeSelect").value.split("|");
-    speakAgent(`Sweep started for ${country} in ${currency}. Pan slowly across each bookshelf and room wall in one continuous pass.`);
+    const secPerShelf = Math.round(profile.intervalMs / 1000);
+
+    speakAgent(
+      `Sweep started for ${country} in ${currency}. Pan at about ${profile.maxPanCmPerSec} centimeters per second, spending ${secPerShelf} seconds per shelf. Hold steady on the first shelf now.`
+    );
 
     if (window.liveSpeechRecognizer) {
       try { window.liveSpeechRecognizer.start(); } catch (e) {}
@@ -312,59 +388,108 @@
     let latestGrayBuffer = null;
     clearInterval(blurInterval);
     blurInterval = setInterval(() => {
-      const { sharpness, sharpnessPct, glarePct, grayBuffer } = computeSharpnessAndGlare(videoEl, workCanvas);
+      const activeProfile = window.CloudVisionAndPrice.getPacingProfile(modelSelectEl.value);
+      const { sharpness, sharpnessPct, glarePct, panCmPerSec, grayBuffer } = computeSharpnessGlareAndPanSpeed(
+        videoEl,
+        workCanvas,
+        prevTickGray
+      );
+      prevTickGray = grayBuffer;
       currentSharpness = sharpness;
+      currentPanCmPerSec = panCmPerSec;
       latestGrayBuffer = grayBuffer;
 
       const sharpBadge = document.getElementById("sharpnessBadge");
       const motionBadge = document.getElementById("motionBadge");
       const alertBanner = document.getElementById("alertBanner");
+      const captureBadge = document.getElementById("captureStateBadge");
+      const progressBar = document.getElementById("captureProgressBar");
 
-      const isFast = gyroSpeedDegPerSec > 85;
+      const isTooFast = panCmPerSec > activeProfile.maxPanCmPerSec || gyroSpeedDegPerSec > activeProfile.maxGyroDegPerSec;
       const isBlurry = sharpness < 12;
 
       sharpBadge.textContent = `🎯 Sharpness: ${sharpnessPct}% (${isBlurry ? "BLURRY" : "GOOD"})`;
+      motionBadge.textContent = `🧭 Pan: ${panCmPerSec} cm/s (Limit: ≤${activeProfile.maxPanCmPerSec} cm/s)`;
 
-      if (isFast || isBlurry || glarePct > 28) {
+      // Update Cooldown & Capture Readiness Bar
+      const elapsedSinceCapture = Date.now() - lastCaptureTime;
+      const progressPct = Math.min(100, Math.round((elapsedSinceCapture / activeProfile.intervalMs) * 100));
+      if (progressBar) progressBar.style.width = `${progressPct}%`;
+
+      if (isAnalyzingCloud) {
+        if (captureBadge) {
+          captureBadge.className = "capture-badge capturing";
+          captureBadge.textContent = `🔍 Frame #${savedFrames.length} Captured — AI Reading...`;
+        }
+      } else if (progressPct < 100) {
+        const remSec = Math.max(0.1, ((activeProfile.intervalMs - elapsedSinceCapture) / 1000)).toFixed(1);
+        if (captureBadge) {
+          captureBadge.className = "capture-badge cooldown";
+          captureBadge.textContent = `⏳ Next Auto-Snap in ${remSec}s (Pan slowly to next section)`;
+        }
+      } else {
+        if (captureBadge) {
+          captureBadge.className = "capture-badge ready";
+          captureBadge.textContent = `🟢 Ready to Snap! Hold steady on shelf`;
+        }
+      }
+
+      if (isTooFast || isBlurry || glarePct > 28) {
         alertBanner.classList.remove("hidden");
-        motionBadge.textContent = isFast ? "📱 Motion: Too Fast!" : "📱 Hold Steady";
-        if (Date.now() - lastBlurWarn > 8000) {
+        if (isTooFast) {
+          alertBanner.textContent = `⚠️ Panning too fast (${panCmPerSec} cm/s)! Slow down to ≤${activeProfile.maxPanCmPerSec} cm/s so frames stay sharp and within rate limits.`;
+        } else if (glarePct > 28) {
+          alertBanner.textContent = `⚠️ Strong glare detected on book spines! Angle the phone slightly.`;
+        } else {
+          alertBanner.textContent = `⚠️ Image is blurry! Hold steady on this shelf for a second.`;
+        }
+
+        if (Date.now() - lastBlurWarn > 7500) {
           lastBlurWarn = Date.now();
-          if (glarePct > 28) {
-            speakAgent("I see strong glare on those spines. Please angle the camera slightly.");
+          if (isTooFast) {
+            speakAgent(`Slow down your pan slightly to about ${activeProfile.maxPanCmPerSec} centimeters per second.`);
+          } else if (glarePct > 28) {
+            speakAgent("I see glare on those spines. Please angle the camera slightly.");
           } else {
-            speakAgent("Hold steady for a second, that shelf section is slightly blurry.");
+            speakAgent("Hold steady for a second so I can capture a sharp frame.");
           }
         }
       } else {
         alertBanner.classList.add("hidden");
-        motionBadge.textContent = "📱 Motion: Steady";
       }
     }, 250);
 
+    // Capture first frame at 1.6s, then dynamically trigger whenever model interval is reached & camera is steady
     setTimeout(() => {
       if (isSweeping) {
         lastKeyframeGray = latestGrayBuffer ? new Float32Array(latestGrayBuffer) : null;
         captureAndAnalyzeKeyframe(videoEl, true);
       }
-    }, 1800);
+    }, 1600);
 
     clearInterval(autoCaptureInterval);
     autoCaptureInterval = setInterval(() => {
+      if (!isSweeping || isAnalyzingCloud) return;
+      const activeProfile = window.CloudVisionAndPrice.getPacingProfile(modelSelectEl.value);
+      const timeSinceLast = Date.now() - lastCaptureTime;
+
       if (
-        isSweeping &&
-        !isAnalyzingCloud &&
+        timeSinceLast >= activeProfile.intervalMs &&
         currentSharpness >= 10 &&
-        gyroSpeedDegPerSec <= 85 &&
-        (savedFrames.length < 3 || hasSceneChanged(latestGrayBuffer, lastKeyframeGray))
+        currentPanCmPerSec <= activeProfile.maxPanCmPerSec &&
+        (savedFrames.length < 2 || hasSceneChanged(latestGrayBuffer, lastKeyframeGray))
       ) {
         lastKeyframeGray = latestGrayBuffer ? new Float32Array(latestGrayBuffer) : null;
         captureAndAnalyzeKeyframe(videoEl, false);
       }
-    }, 5500);
+    }, 400);
   }
 
   document.getElementById("captureKeyframeBtn").addEventListener("click", () => {
+    if (isAnalyzingCloud) {
+      alert("Current frame is still being analyzed. Please wait 1 second.");
+      return;
+    }
     captureAndAnalyzeKeyframe(document.getElementById("cameraVideo"), true);
   });
 
@@ -376,6 +501,7 @@
       return;
     }
 
+    lastCaptureTime = Date.now();
     const captureCanvas = document.getElementById("captureCanvas");
     const ctx = captureCanvas.getContext("2d");
     captureCanvas.width = videoEl.videoWidth || 1280;
@@ -392,18 +518,28 @@
     renderFramesGrid();
     document.getElementById("liveFrameCount").textContent = savedFrames.length;
 
+    // Immediate Visual + Audio Confirmation that Frame #X Has Been Captured
+    triggerShutterVisual(frameIdx);
+
     const apiKey = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
     const modelChoice = document.getElementById("modelSelect").value;
     const [countryCode] = document.getElementById("localeSelect").value.split("|");
 
     const speechEl = document.getElementById("agentSpeechText");
     if (speechEl) {
-      speechEl.textContent = `🔍 Analyzing ${filename} with Cloud Vision AI...`;
+      speechEl.textContent = `📸 Frame #${frameIdx} (${filename}) captured! Reading spines & items...`;
     }
 
     isAnalyzingCloud = true;
+    const callStart = performance.now();
     try {
       const result = await window.CloudVisionAndPrice.analyzeKeyframe(base64, apiKey, modelChoice, countryCode);
+      const elapsedSec = ((performance.now() - callStart) / 1000).toFixed(1);
+
+      const modelBadge = document.getElementById("modelBadge");
+      if (modelBadge) {
+        modelBadge.textContent = `🤖 ${window.CloudVisionAndPrice.lastUsedModel} (${elapsedSec}s)`;
+      }
 
       const rawBooks = result.books || [];
       const rawItems = result.items || [];
@@ -453,21 +589,26 @@
 
       renderLiveLists();
 
+      // Dynamic Voice Pacing Guidance: tells the user what was captured AND when to move/pan next
       if (foundNewArt) {
-        speakAgent("I logged a framed picture on the wall. Is that an original work or a print?");
+        speakAgent(
+          `Frame ${frameIdx} captured. Logged ${rawBooks.length} books and a framed picture—is that an original or a print? You can pan slowly to the next section now.`
+        );
       } else if (result.capture_feedback) {
-        speakAgent(result.capture_feedback);
+        speakAgent(`Frame ${frameIdx} captured. ${result.capture_feedback}`);
       } else if (rawBooks.length > 0 || rawItems.length > 0) {
-        speakAgent(`Logged ${rawBooks.length} books and ${rawItems.length} room items in ${filename}. Keep panning smoothly.`);
+        speakAgent(
+          `Frame ${frameIdx} captured in ${elapsedSec} seconds: saw ${rawBooks.length} books and ${rawItems.length} room items. Keep panning smoothly to the next section.`
+        );
       } else {
-        if (speechEl) {
-          speechEl.textContent = `Scanned ${filename}. Point camera at bookshelves or room items and click "Snap Shelf Now".`;
-        }
+        speakAgent(
+          `Frame ${frameIdx} captured—no new spines in this view. Pan toward the next bookshelf or room corner.`
+        );
       }
     } catch (err) {
       console.error("Keyframe analysis error:", err);
       if (speechEl) {
-        speechEl.textContent = `⚠️ Vision API Warning on ${filename}: ${err.message}`;
+        speechEl.textContent = `⚠️ Frame #${frameIdx} Notice: ${err.message}`;
       }
     } finally {
       isAnalyzingCloud = false;
@@ -525,6 +666,12 @@
     clearInterval(autoCaptureInterval);
     document.getElementById("statusDot").classList.remove("active");
 
+    const captureBadge = document.getElementById("captureStateBadge");
+    if (captureBadge) {
+      captureBadge.className = "capture-badge ready";
+      captureBadge.textContent = "✅ Sweep Complete — Pricing Inventory...";
+    }
+
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
       stream = null;
@@ -537,7 +684,7 @@
     }
 
     const durationSec = Math.max(1, Math.round((Date.now() - sweepStartTime) / 1000));
-    speakAgent("Sweep finished. Releasing camera memory and pricing your inventory against local catalogs.");
+    speakAgent("Sweep finished. Releasing camera memory and pricing your books and room items.");
 
     const primaryLocale = document.getElementById("localeSelect").value;
     const secondaryLocale = document.getElementById("secondaryLocaleSelect").value;
@@ -574,9 +721,13 @@
     document.getElementById("reportSection").classList.remove("hidden");
     document.getElementById("reportSection").scrollIntoView({ behavior: "smooth" });
 
+    if (captureBadge) {
+      captureBadge.textContent = "✅ Claim Packet Generated";
+    }
+
     speakAgent(
       `Claim packet ready. I logged ${finalPacket.totals.book_count} books across ${finalPacket.totals.shelf_run_m} meters of shelving, ` +
-      `valued at ${currency} ${finalPacket.totals.books_replacement_cost}, plus ${finalPacket.items.length} room items.`
+      `valued at ${currency} ${finalPacket.totals.books_replacement_cost} new and ${currency} ${finalPacket.totals.books_used_value} used, plus ${finalPacket.items.length} room items.`
     );
   });
 
