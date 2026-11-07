@@ -6,21 +6,22 @@ window.CloudVisionAndPrice = {
   },
   visionCallTimes: [],
 
-  // Master prompt instructing strict anti-hallucination rules
+  // Master prompt instructing strict anti-hallucination rules and complete room + spine detection
   getVisionPrompt(countryName) {
     return `You are a precision insurance contents inventory vision system operating in ${countryName}.
-Analyze this library/room frame and return ONLY valid JSON matching this exact structure:
+Analyze this camera frame and detect ALL visible books (vertical spines, tilted books, or stacked/flat books) AND ALL non-book room items (shelving units, desks, chairs, tables, lamps, monitors, laptops, electronics, framed art, portraits, rugs, plants, decor).
+Return ONLY valid JSON matching this exact structure:
 {
   "shelf_id": "Shelf_1",
   "books": [
     {
       "position": 1,
       "status": "identified | unidentified | needs_appraisal",
-      "title": "Exact spine title if clearly human-legible, else empty string",
+      "title": "Exact spine/cover title if clearly human-legible, else empty string",
       "author": "Author on spine if legible, else empty string",
       "publisher": "Publisher if legible, else empty string",
       "edition": "Edition if visible, else empty string",
-      "bbox_2d": [ymin, xmin, ymax, xmax],
+      "bbox_2d": [120, 210, 480, 265],
       "id_confidence": 0.92,
       "rare_or_signed_reason": "Empty unless looks antiquarian, leather-bound pre-1970, or signed"
     }
@@ -28,9 +29,9 @@ Analyze this library/room frame and return ONLY valid JSON matching this exact s
   "items": [
     {
       "category": "shelving | furniture | lighting | electronics | framed_art | rug | decor",
-      "description": "Concise material and visual description",
+      "description": "Concise material and visual description (e.g., Wooden 4-tier bookcase, Black desk lamp, Laptop)",
       "brand_model": "Only if legible on item, else empty string",
-      "bbox_2d": [ymin, xmin, ymax, xmax],
+      "bbox_2d": [50, 100, 900, 850],
       "dimensions_cm": { "w": 80, "h": 180, "d": 30 },
       "is_art_or_portrait": false,
       "confidence": 0.90
@@ -44,12 +45,13 @@ Analyze this library/room frame and return ONLY valid JSON matching this exact s
   "capture_feedback": "Short spoken guidance if glare, blur, or cut-off shelf is noticed, else empty string"
 }
 CRITICAL RULES:
-1. Count EVERY visible book spine (including horizontal/stacked books).
-2. NEVER guess a title for a blurry or unreadable spine. If unreadable, set status="unidentified", title="", author="", edition="".
-3. bbox_2d coordinates must be normalized integers from 0 to 1000 [ymin, xmin, ymax, xmax].`;
+1. Count EVERY visible book (whether vertical on a shelf, lying flat, or held in view).
+2. Count EVERY visible non-book object in the room (bookshelves, tables, chairs, electronics, lamps, wall art, rugs, decor).
+3. NEVER guess a title for a blurry or unreadable spine. If unreadable, set status="unidentified", title="", author="", edition="".
+4. bbox_2d coordinates must be normalized integers from 0 to 1000 [ymin, xmin, ymax, xmax].`;
   },
 
-  // Automatic Multi-Model Vision Call with Failover
+  // Automatic Multi-Model Vision Call with Failover & Zero-Thinking-Delay Config
   async analyzeKeyframe(base64Jpeg, apiKey, modelChoice, countryName) {
     const t0 = performance.now();
     const cleanKey = (apiKey || "").trim();
@@ -64,15 +66,15 @@ CRITICAL RULES:
 
     // Build Gemini failover chain
     const modelsToTry = modelChoice === "gemini-2.0-flash"
-      ? ["gemini-2.0-flash", "gemini-2.5-flash-lite"]
+      ? ["gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash"]
       : modelChoice === "gemini-2.5-flash-lite"
-      ? ["gemini-2.5-flash-lite", "gemini-2.0-flash"]
+      ? ["gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash"]
       : ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"];
 
     let lastErr = null;
     for (const modelName of modelsToTry) {
       try {
-        const res = await this.callGeminiVisionWithTimeout(base64Jpeg, cleanKey, modelName, prompt, 9500);
+        const res = await this.callGeminiVisionWithTimeout(base64Jpeg, cleanKey, modelName, prompt, 22000);
         this.recordVisionLatency(performance.now() - t0);
         return res;
       } catch (err) {
@@ -88,6 +90,16 @@ CRITICAL RULES:
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+      // Disable dynamic thinking budget on gemini-2.5-flash so vision JSON returns in ~1.8s instead of timing out
+      const generationConfig = {
+        temperature: 0.1,
+        responseMimeType: "application/json"
+      };
+      if (modelName === "gemini-2.5-flash") {
+        generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      }
+
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -99,17 +111,27 @@ CRITICAL RULES:
               { inline_data: { mime_type: "image/jpeg", data: base64Jpeg } }
             ]
           }],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: "application/json"
-          }
+          generationConfig
         })
       });
+
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status} on ${modelName}`);
+        let errDetail = "";
+        try {
+          const errJson = await response.json();
+          errDetail = errJson?.error?.message || "";
+        } catch (e) {}
+        throw new Error(`HTTP ${response.status} on ${modelName}${errDetail ? ": " + errDetail : ""}`);
       }
+
       const data = await response.json();
-      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      // Filter out internal thought blocks if present and concatenate text parts
+      const rawText = parts
+        .filter(p => !p.thought && typeof p.text === "string")
+        .map(p => p.text)
+        .join("\n") || parts?.[0]?.text || "{}";
+
       return this.safeParseJson(rawText);
     } finally {
       clearTimeout(timer);
@@ -155,7 +177,7 @@ CRITICAL RULES:
 
     for (const b of rawBooks) {
       // Enforce anti-guessing rule: low confidence becomes unidentified
-      if (b.status === "identified" && (!b.title || b.id_confidence < 0.65)) {
+      if (b.status === "identified" && (!b.title || b.id_confidence < 0.62)) {
         b.status = "unidentified";
         b.title = "";
         b.author = "";
@@ -174,7 +196,6 @@ CRITICAL RULES:
           continue;
         }
       } else if (b.status === "unidentified") {
-        // Prevent adjacent keyframes from double-counting the same unidentified spine slot on the same shelf
         const dupUnidentified = uniqueBooks.find(
           u => u.status === "unidentified" &&
                u.shelf === b.shelf &&
@@ -190,7 +211,7 @@ CRITICAL RULES:
     const uniqueItems = [];
     for (const item of rawItems) {
       const existing = uniqueItems.find(
-        u => u.category === item.category && this.stringSimilarity(u.description, item.description) > 0.72
+        u => u.category === item.category && this.stringSimilarity(u.description, item.description) > 0.70
       );
       if (!existing) uniqueItems.push(item);
     }
@@ -206,21 +227,18 @@ CRITICAL RULES:
     const [secCountryCode, secCurrencyCode] = secondaryLocale.split("|");
     const nowIso = new Date().toISOString();
 
-    // FX conversion table when converting from another market (explicitly labeled converted: true)
     const fxFromUsd = { USD: 1, INR: 84.5, GBP: 0.79, CAD: 1.38, EUR: 0.92 };
     const convertAmount = (amt, fromCurr, toCurr) => {
       const inUsd = amt / (fxFromUsd[fromCurr] || 1);
       return Number((inUsd * (fxFromUsd[toCurr] || 1)).toFixed(2));
     };
 
-    // Price identified books in parallel batches of 6
     const identifiedBooks = books.filter(b => b.status === "identified" && b.title);
     for (let i = 0; i < identifiedBooks.length; i += 6) {
       const batch = identifiedBooks.slice(i, i + 6);
       await Promise.all(batch.map(b => this.lookupSingleBookPrice(b, countryCode, currencyCode, convertAmount, nowIso)));
     }
 
-    // Build 10-book Secondary Country comparison table
     const secondaryComparison = [];
     const sample10 = identifiedBooks.slice(0, 10);
     for (const b of sample10) {
@@ -241,7 +259,6 @@ CRITICAL RULES:
       });
     }
 
-    // Price non-book items using sourced retail category benchmarks + search URLs
     for (const item of items) {
       this.priceNonBookItem(item, countryCode, currencyCode, convertAmount, nowIso);
     }
@@ -269,7 +286,6 @@ CRITICAL RULES:
 
           const infoUrl = info.infoLink || `https://books.google.com/books?id=${vol.id}`;
 
-          // Check if pre-1970 antiquarian
           const pubYear = parseInt((info.publishedDate || "").slice(0, 4), 10);
           if (pubYear && pubYear < 1970) {
             book.status = "needs_appraisal";
@@ -301,7 +317,6 @@ CRITICAL RULES:
             return;
           }
 
-          // Fallback to Open Library + Google Books verified catalog reference when direct saleInfo is omitted
           const baseUsd = info.printType === "BOOK" ? 16.99 : 12.99;
           const localNew = convertAmount(baseUsd, "USD", currencyCode);
           book.replacement_cost = {
@@ -322,7 +337,6 @@ CRITICAL RULES:
         }
       }
 
-      // Secondary Fallback: Direct Open Library Search API
       const olUrl = `https://openlibrary.org/search.json?title=${encodeURIComponent(book.title)}&limit=1`;
       const olRes = await fetch(olUrl);
       if (olRes.ok) {
@@ -417,9 +431,15 @@ CRITICAL RULES:
 
   safeParseJson(text) {
     try {
-      const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+      const cleaned = (text || "").replace(/```json/gi, "").replace(/```/g, "").trim();
+      const firstBrace = cleaned.indexOf("{");
+      const lastBrace = cleaned.lastIndexOf("}");
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+      }
       return JSON.parse(cleaned);
     } catch (e) {
+      console.warn("JSON parse fallback triggered on text:", text);
       return { books: [], items: [] };
     }
   }

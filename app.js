@@ -1,6 +1,7 @@
 (function () {
   let stream = null;
   let isSweeping = false;
+  let isAnalyzingCloud = false;
   let sweepStartTime = 0;
   let timerInterval = null;
   let edgeInterval = null;
@@ -19,11 +20,15 @@
   let roomEstimate = { length_m: 4.2, width_m: 3.5, height_m: 2.44, shape_note: "rectangular" };
   let finalPacket = null;
 
-  // Auto-fill API key if ?key= is in URL
+  // Auto-fill API key if ?key= is in URL or saved in localStorage
   const urlParams = new URLSearchParams(window.location.search);
   const apiKeyInput = document.getElementById("apiKeyInput");
-  if (urlParams.get("key") && apiKeyInput) {
-    apiKeyInput.value = urlParams.get("key");
+  if (apiKeyInput) {
+    const savedKey = urlParams.get("key") || localStorage.getItem("CLAIM_AGENT_API_KEY") || "";
+    if (savedKey) apiKeyInput.value = savedKey;
+    apiKeyInput.addEventListener("input", () => {
+      localStorage.setItem("CLAIM_AGENT_API_KEY", apiKeyInput.value.trim());
+    });
   }
 
   // Initialize On-Device Edge AI
@@ -49,7 +54,7 @@
   // 2D Laplacian Variance Sharpness & Glare Calculator on 320x240 canvas
   function computeSharpnessAndGlare(videoEl, workCanvas) {
     if (!videoEl || videoEl.readyState < 2 || !workCanvas) {
-      return { sharpness: 160, glarePct: 0, grayBuffer: null };
+      return { sharpness: 65, sharpnessPct: 92, glarePct: 0, grayBuffer: null };
     }
     const ctx = workCanvas.getContext("2d", { willReadFrequently: true });
     const w = workCanvas.width;
@@ -78,16 +83,18 @@
       }
     }
     const mean = sum / count;
-    const variance = (sumSq / count) - (mean * mean);
+    const variance = Math.max(0, (sumSq / count) - (mean * mean));
+    const sharpnessPct = Math.min(99, Math.round((variance / 45) * 100));
     const glarePct = (glarePixels / (w * h)) * 100;
     return {
       sharpness: Math.round(variance),
+      sharpnessPct,
       glarePct: Number(glarePct.toFixed(1)),
       grayBuffer: gray
     };
   }
 
-  // Checks if camera view has changed by at least 14% mean absolute pixel difference
+  // Checks if camera view has changed by at least 3.5% mean absolute pixel difference
   function hasSceneChanged(currentGray, prevGray) {
     if (!currentGray || !prevGray || currentGray.length !== prevGray.length) return true;
     let diffSum = 0;
@@ -95,7 +102,7 @@
       diffSum += Math.abs(currentGray[i] - prevGray[i]);
     }
     const meanDiffPct = (diffSum / (currentGray.length / 4) / 255) * 100;
-    return meanDiffPct >= 14.0;
+    return meanDiffPct >= 3.5;
   }
 
   // Voice Output (Web Speech Synthesis) with Half-Duplex Lock
@@ -175,8 +182,8 @@
       alert("Please paste your free Gemini (AIza...) or Groq (gsk_...) API key first.");
       return;
     }
+    localStorage.setItem("CLAIM_AGENT_API_KEY", apiKey);
 
-    // Request iOS Gyroscope permission if applicable
     if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
       try { await DeviceMotionEvent.requestPermission(); } catch (e) {}
     }
@@ -204,10 +211,11 @@
       alert("Please paste your API key first.");
       return;
     }
+    localStorage.setItem("CLAIM_AGENT_API_KEY", apiKey);
     const videoEl = document.getElementById("cameraVideo");
     videoEl.srcObject = null;
     videoEl.src = URL.createObjectURL(file);
-    videoEl.loop = false;
+    videoEl.loop = true;
     await videoEl.play();
     beginSweepLoop(videoEl);
   });
@@ -226,7 +234,6 @@
       try { window.liveSpeechRecognizer.start(); } catch (e) {}
     }
 
-    // Timer UI
     clearInterval(timerInterval);
     timerInterval = setInterval(() => {
       const sec = Math.floor((Date.now() - sweepStartTime) / 1000);
@@ -238,11 +245,27 @@
     const overlayCanvas = document.getElementById("overlayCanvas");
     const workCanvas = document.getElementById("workCanvas");
 
-    // 500ms On-Device Segmentation Loop
+    // 500ms On-Device Segmentation Loop + Edge Non-Book Object Bridge
     clearInterval(edgeInterval);
     edgeInterval = setInterval(() => {
       if (window.EdgeSegmentation) {
-        window.EdgeSegmentation.processFrame(videoEl, overlayCanvas, workCanvas);
+        window.EdgeSegmentation.processFrame(videoEl, overlayCanvas, workCanvas, (edgeItems) => {
+          const latestFrameRef = savedFrames.length > 0
+            ? savedFrames[savedFrames.length - 1].frameRef
+            : "evidence_frames/frame_001.jpg";
+          let added = false;
+          for (const it of edgeItems) {
+            const exists = rawItemsBuffer.some(
+              existing => existing.category === it.category &&
+                          window.CloudVisionAndPrice.stringSimilarity(existing.description, it.description) > 0.70
+            );
+            if (!exists) {
+              rawItemsBuffer.push({ ...it, frame_ref: latestFrameRef });
+              added = true;
+            }
+          }
+          if (added) renderLiveLists();
+        });
       }
     }, 500);
 
@@ -251,7 +274,7 @@
     let latestGrayBuffer = null;
     clearInterval(blurInterval);
     blurInterval = setInterval(() => {
-      const { sharpness, glarePct, grayBuffer } = computeSharpnessAndGlare(videoEl, workCanvas);
+      const { sharpness, sharpnessPct, glarePct, grayBuffer } = computeSharpnessAndGlare(videoEl, workCanvas);
       currentSharpness = sharpness;
       latestGrayBuffer = grayBuffer;
 
@@ -259,16 +282,17 @@
       const motionBadge = document.getElementById("motionBadge");
       const alertBanner = document.getElementById("alertBanner");
 
-      sharpBadge.textContent = `🎯 Sharpness: ${sharpness}`;
       const isFast = gyroSpeedDegPerSec > 85;
-      const isBlurry = sharpness < 75;
+      const isBlurry = sharpness < 12;
 
-      if (isFast || isBlurry || glarePct > 22) {
+      sharpBadge.textContent = `🎯 Sharpness: ${sharpnessPct}% (${isBlurry ? "BLURRY" : "GOOD"})`;
+
+      if (isFast || isBlurry || glarePct > 28) {
         alertBanner.classList.remove("hidden");
         motionBadge.textContent = isFast ? "📱 Motion: Too Fast!" : "📱 Hold Steady";
-        if (Date.now() - lastBlurWarn > 7000) {
+        if (Date.now() - lastBlurWarn > 8000) {
           lastBlurWarn = Date.now();
-          if (glarePct > 22) {
+          if (glarePct > 28) {
             speakAgent("I see strong glare on those spines. Please angle the camera slightly.");
           } else {
             speakAgent("Hold steady for a second, that shelf section is slightly blurry.");
@@ -280,34 +304,36 @@
       }
     }, 250);
 
-    // Capture first keyframe at 2.5s, then every 5.8s when sharp and scene has panned
+    // Capture first keyframe at 1.8s, then every 5.5s when camera is steady
     setTimeout(() => {
       if (isSweeping) {
-        lastKeyframeGray = latestGrayBuffer;
-        captureAndAnalyzeKeyframe(videoEl);
+        lastKeyframeGray = latestGrayBuffer ? new Float32Array(latestGrayBuffer) : null;
+        captureAndAnalyzeKeyframe(videoEl, true);
       }
-    }, 2500);
+    }, 1800);
 
     clearInterval(autoCaptureInterval);
     autoCaptureInterval = setInterval(() => {
       if (
         isSweeping &&
-        currentSharpness >= 70 &&
+        !isAnalyzingCloud &&
+        currentSharpness >= 10 &&
         gyroSpeedDegPerSec <= 85 &&
-        hasSceneChanged(latestGrayBuffer, lastKeyframeGray)
+        (savedFrames.length < 3 || hasSceneChanged(latestGrayBuffer, lastKeyframeGray))
       ) {
         lastKeyframeGray = latestGrayBuffer ? new Float32Array(latestGrayBuffer) : null;
-        captureAndAnalyzeKeyframe(videoEl);
+        captureAndAnalyzeKeyframe(videoEl, false);
       }
-    }, 5800);
+    }, 5500);
   }
 
   document.getElementById("captureKeyframeBtn").addEventListener("click", () => {
-    captureAndAnalyzeKeyframe(document.getElementById("cameraVideo"));
+    captureAndAnalyzeKeyframe(document.getElementById("cameraVideo"), true);
   });
 
-  async function captureAndAnalyzeKeyframe(videoEl) {
+  async function captureAndAnalyzeKeyframe(videoEl, forceCapture) {
     if (!isSweeping || !videoEl || videoEl.readyState < 2) return;
+    if (isAnalyzingCloud && !forceCapture) return;
     if (skipNextShelfFlag) {
       skipNextShelfFlag = false;
       return;
@@ -333,11 +359,24 @@
     const modelChoice = document.getElementById("modelSelect").value;
     const [countryCode] = document.getElementById("localeSelect").value.split("|");
 
+    const speechEl = document.getElementById("agentSpeechText");
+    if (speechEl) {
+      speechEl.textContent = `🔍 Analyzing ${filename} with Cloud Vision AI...`;
+    }
+
+    isAnalyzingCloud = true;
     try {
       const result = await window.CloudVisionAndPrice.analyzeKeyframe(base64, apiKey, modelChoice, countryCode);
 
-      // Compute median spine pixel height in this frame for metric scale calibration
       const rawBooks = result.books || [];
+      const rawItems = result.items || [];
+
+      // Feed Gemini bounding boxes back to EdgeSegmentation so they render on the live canvas
+      if (window.EdgeSegmentation) {
+        window.EdgeSegmentation.updateCloudBoxes(rawBooks, rawItems);
+      }
+
+      // Compute median spine pixel height in this frame for metric scale calibration
       const pxHeights = rawBooks
         .map(b => b.bbox_2d ? ((b.bbox_2d[2] - b.bbox_2d[0]) / 1000) * captureCanvas.height : 280)
         .filter(h => h > 40)
@@ -361,7 +400,7 @@
       }
 
       let foundNewArt = false;
-      for (const item of (result.items || [])) {
+      for (const item of rawItems) {
         if (item.category === "framed_art" || item.is_art_or_portrait) {
           foundNewArt = true;
         }
@@ -383,11 +422,20 @@
         speakAgent("I logged a framed picture on the wall. Is that an original work or a print?");
       } else if (result.capture_feedback) {
         speakAgent(result.capture_feedback);
-      } else if (rawBooks.length > 0) {
-        speakAgent(`Logged ${rawBooks.length} spines in ${filename}. Keep panning smoothly.`);
+      } else if (rawBooks.length > 0 || rawItems.length > 0) {
+        speakAgent(`Logged ${rawBooks.length} books and ${rawItems.length} room items in ${filename}. Keep panning smoothly.`);
+      } else {
+        if (speechEl) {
+          speechEl.textContent = `Scanned ${filename}. Point camera at bookshelves or room items and click "Snap Shelf Now".`;
+        }
       }
     } catch (err) {
       console.error("Keyframe analysis error:", err);
+      if (speechEl) {
+        speechEl.textContent = `⚠️ Vision API Warning on ${filename}: ${err.message}. Check API key or switch Vision Engine dropdown.`;
+      }
+    } finally {
+      isAnalyzingCloud = false;
     }
   }
 
@@ -402,21 +450,25 @@
     document.getElementById("liveShelfRun").textContent = `${shelfRunM}m`;
 
     const booksListEl = document.getElementById("liveBooksList");
-    booksListEl.innerHTML = uniqueBooks.slice().reverse().map(b => `
-      <div class="list-item ${b.status !== "identified" ? "warn" : ""}">
-        <strong>${b.status === "unidentified" ? "⚠️ [Unidentified Spine]" : b.title}</strong>
-        ${b.author ? ` — ${b.author}` : ""}
-        <div class="meta">${b.shelf} | ${b.spine_height_cm}×${b.spine_thickness_cm} cm | <code>${b.frame_ref}</code></div>
-      </div>
-    `).join("");
+    if (uniqueBooks.length > 0) {
+      booksListEl.innerHTML = uniqueBooks.slice().reverse().map(b => `
+        <div class="list-item ${b.status !== "identified" ? "warn" : ""}">
+          <strong>${b.status === "unidentified" ? "⚠️ [Unidentified Spine]" : b.title}</strong>
+          ${b.author ? ` — ${b.author}` : ""}
+          <div class="meta">${b.shelf} | ${b.spine_height_cm}×${b.spine_thickness_cm} cm | <code>${b.frame_ref}</code></div>
+        </div>
+      `).join("");
+    }
 
     const itemsListEl = document.getElementById("liveItemsList");
-    itemsListEl.innerHTML = uniqueItems.slice().reverse().map(it => `
-      <div class="list-item ${it.category === "framed_art" ? "warn" : ""}">
-        <strong>[${it.category.toUpperCase()}]</strong> ${it.description}
-        <div class="meta">${it.dimensions_cm?.w || 60}×${it.dimensions_cm?.h || 80} cm | <code>${it.frame_ref}</code></div>
-      </div>
-    `).join("");
+    if (uniqueItems.length > 0) {
+      itemsListEl.innerHTML = uniqueItems.slice().reverse().map(it => `
+        <div class="list-item ${it.category === "framed_art" ? "warn" : ""}">
+          <strong>[${it.category.toUpperCase()}]</strong> ${it.description}
+          <div class="meta">${it.dimensions_cm?.w || 60}×${it.dimensions_cm?.h || 80} cm | <code>${it.frame_ref}</code></div>
+        </div>
+      `).join("");
+    }
   }
 
   function renderFramesGrid() {
@@ -438,7 +490,6 @@
     clearInterval(autoCaptureInterval);
     document.getElementById("statusDot").classList.remove("active");
 
-    // 1. Free phone camera & WASM memory immediately
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
       stream = null;
