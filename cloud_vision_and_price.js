@@ -6,27 +6,24 @@ window.CloudVisionAndPrice = {
   },
   visionCallTimes: [],
 
-  // Preserves the exact key (including dots, dashes, underscores) without enforcing any prefix or length rules
+  // Preserves the exact key without enforcing prefix or length rules
   sanitizeApiKey(rawKey) {
     if (!rawKey) return "";
     let cleaned = String(rawKey).trim();
-    // Strip accidental wrapping quotes
     cleaned = cleaned.replace(/^["']|["']$/g, "");
-    // If copied with variable assignment like GEMINI_API_KEY=..., take the right side
     if (cleaned.includes("=")) {
       cleaned = cleaned.split("=").pop().trim().replace(/^["']|["']$/g, "");
     }
     return cleaned.trim();
   },
 
-  // Direct live check: queries Google's endpoint to see if the key works, with zero format restrictions
+  // Verifies endpoint access with zero arbitrary key format rules
   async testApiKeyConnection(rawKey, modelChoice) {
     const cleanKey = this.sanitizeApiKey(rawKey);
     if (!cleanKey) {
       throw new Error("API key input is empty. Please paste your key first.");
     }
 
-    // If Groq is selected or key is from Groq
     if (modelChoice === "groq-llama4" || cleanKey.startsWith("gsk_")) {
       const res = await fetch("https://api.groq.com/openai/v1/models", {
         headers: { "Authorization": `Bearer ${cleanKey}` }
@@ -38,13 +35,18 @@ window.CloudVisionAndPrice = {
       return { provider: "Groq Cloud LPU" };
     }
 
-    // Query Google Gemini API directly
-    const testUrl = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${encodeURIComponent(cleanKey)}`;
+    // Ping Gemini 3.5 Flash endpoint directly
+    const testUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${encodeURIComponent(cleanKey)}`;
     const res = await fetch(testUrl, {
-      method: "GET",
+      method: "POST",
       headers: {
+        "Content-Type": "application/json",
         "x-goog-api-key": cleanKey
-      }
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: "ping" }] }],
+        generationConfig: { maxOutputTokens: 5 }
+      })
     });
 
     if (!res.ok) {
@@ -53,7 +55,7 @@ window.CloudVisionAndPrice = {
       throw new Error(msg);
     }
 
-    return { provider: "Google Gemini API" };
+    return { provider: "Google Gemini 3.5 Flash" };
   },
 
   getVisionPrompt(countryName) {
@@ -100,6 +102,7 @@ CRITICAL RULES:
 4. bbox_2d coordinates must be normalized integers from 0 to 1000 [ymin, xmin, ymax, xmax].`;
   },
 
+  // Multi-Model Vision Call with Gemini 3.5 Flash as Default Primary
   async analyzeKeyframe(base64Jpeg, apiKey, modelChoice, countryName) {
     const t0 = performance.now();
     const cleanKey = this.sanitizeApiKey(apiKey);
@@ -114,11 +117,12 @@ CRITICAL RULES:
       return res;
     }
 
-    const modelsToTry = modelChoice === "gemini-2.0-flash"
-      ? ["gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash"]
-      : modelChoice === "gemini-2.5-flash-lite"
-      ? ["gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash"]
-      : ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"];
+    // Failover sequence targeting Gemini 3.5 generation
+    const modelsToTry = modelChoice === "gemini-3.5-flash-lite"
+      ? ["gemini-3.5-flash-lite", "gemini-3.5-flash"]
+      : modelChoice === "gemini-3.5-flash"
+      ? ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+      : ["gemini-3.5-flash", "gemini-3.5-flash-lite"];
 
     let lastErr = null;
     for (const modelName of modelsToTry) {
@@ -127,7 +131,7 @@ CRITICAL RULES:
         this.recordVisionLatency(performance.now() - t0);
         return res;
       } catch (err) {
-        console.warn(`Model ${modelName} failed or timed out, failing over...`, err.message);
+        console.warn(`Model ${modelName} call failed, trying next option...`, err.message);
         lastErr = err;
         if (err.message.includes("API key not valid") || err.message.includes("API Key not found")) {
           break;
@@ -143,14 +147,6 @@ CRITICAL RULES:
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
 
-      const generationConfig = {
-        temperature: 0.1,
-        responseMimeType: "application/json"
-      };
-      if (modelName === "gemini-2.5-flash") {
-        generationConfig.thinkingConfig = { thinkingBudget: 0 };
-      }
-
       const response = await fetch(url, {
         method: "POST",
         headers: {
@@ -165,7 +161,12 @@ CRITICAL RULES:
               { inline_data: { mime_type: "image/jpeg", data: base64Jpeg } }
             ]
           }],
-          generationConfig
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: "application/json",
+            // Zero thinking budget ensures instant output with zero reasoning token consumption
+            thinkingConfig: { thinkingBudget: 0 }
+          }
         })
       });
 
