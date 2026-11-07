@@ -45,7 +45,7 @@
     });
   }
 
-  // 1-Click Test API Key button
+  // 1-Click Test API Key button: simply checks if the API responds
   const testApiKeyBtn = document.getElementById("testApiKeyBtn");
   if (testApiKeyBtn && apiKeyInput) {
     testApiKeyBtn.addEventListener("click", async () => {
@@ -55,15 +55,15 @@
 
       const speechEl = document.getElementById("agentSpeechText");
       const modelChoice = document.getElementById("modelSelect").value;
-      if (speechEl) speechEl.textContent = "🔌 Testing API key connection...";
+      if (speechEl) speechEl.textContent = "🔌 Checking API connection...";
 
       try {
         const info = await window.CloudVisionAndPrice.testApiKeyConnection(sanitized, modelChoice);
-        const msg = `✅ API Key Verified! Connected to ${info.provider} (${info.keyPreview}, length ${info.length}). Ready to start sweep.`;
+        const msg = `✅ API is working! Connected to ${info.provider}. Ready to start sweep.`;
         if (speechEl) speechEl.textContent = msg;
         alert(msg);
       } catch (err) {
-        const errMsg = `❌ API Key Test Failed: ${err.message}`;
+        const errMsg = `❌ API Check Failed: ${err.message}`;
         if (speechEl) speechEl.textContent = errMsg;
         alert(errMsg);
       }
@@ -209,7 +209,6 @@
     }
   }
 
-  // Quick voice chip buttons
   document.querySelectorAll(".chip-btn").forEach(btn => {
     btn.addEventListener("click", () => handleUserVoiceCommand(btn.dataset.voice));
   });
@@ -219,7 +218,7 @@
     const apiKey = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
     apiKeyInput.value = apiKey;
     if (!apiKey) {
-      alert("Please paste your free Gemini (AIza...) or Groq (gsk_...) API key first.");
+      alert("Please paste your API key first.");
       return;
     }
     localStorage.setItem("CLAIM_AGENT_API_KEY", apiKey);
@@ -242,7 +241,7 @@
     }
   });
 
-  // Upload Recorded Video Sweep (For easy testing or desktop review)
+  // Upload Recorded Video Sweep
   document.getElementById("videoUploadInput").addEventListener("change", async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -286,7 +285,6 @@
     const overlayCanvas = document.getElementById("overlayCanvas");
     const workCanvas = document.getElementById("workCanvas");
 
-    // 500ms On-Device Segmentation Loop + Edge Non-Book Object Bridge
     clearInterval(edgeInterval);
     edgeInterval = setInterval(() => {
       if (window.EdgeSegmentation) {
@@ -310,7 +308,6 @@
       }
     }, 500);
 
-    // 250ms Sharpness, Glare & Gyro Speed Check Loop
     let lastBlurWarn = 0;
     let latestGrayBuffer = null;
     clearInterval(blurInterval);
@@ -345,7 +342,6 @@
       }
     }, 250);
 
-    // Capture first keyframe at 1.8s, then every 5.5s when camera is steady
     setTimeout(() => {
       if (isSweeping) {
         lastKeyframeGray = latestGrayBuffer ? new Float32Array(latestGrayBuffer) : null;

@@ -6,47 +6,40 @@ window.CloudVisionAndPrice = {
   },
   visionCallTimes: [],
 
-  // Strictly cleans copy-pasted API keys (removes quotes, GEMINI_API_KEY= prefix, spaces, and invisible characters)
+  // Preserves the exact key (including dots, dashes, underscores) without enforcing any prefix or length rules
   sanitizeApiKey(rawKey) {
     if (!rawKey) return "";
     let cleaned = String(rawKey).trim();
-    // If user pasted "GEMINI_API_KEY=AIza..." or "export GEMINI_API_KEY=...", extract after '='
+    // Strip accidental wrapping quotes
+    cleaned = cleaned.replace(/^["']|["']$/g, "");
+    // If copied with variable assignment like GEMINI_API_KEY=..., take the right side
     if (cleaned.includes("=")) {
-      cleaned = cleaned.split("=").pop().trim();
+      cleaned = cleaned.split("=").pop().trim().replace(/^["']|["']$/g, "");
     }
-    // Extract exact AIza... (Google, 39 chars) or gsk_... (Groq) token if surrounded by accidental text
-    const googleMatch = cleaned.match(/AIza[0-9A-Za-z\-_]{30,45}/);
-    if (googleMatch) return googleMatch[0];
-    const groqMatch = cleaned.match(/gsk_[0-9A-Za-z\-_]{20,80}/);
-    if (groqMatch) return groqMatch[0];
-    // Otherwise strip all non-ASCII/whitespace/quote characters
-    return cleaned.replace(/[^0-9A-Za-z\-_]/g, "");
+    return cleaned.trim();
   },
 
-  // Quick 1-second diagnostic test to verify if the API key is valid and active
+  // Direct live check: queries Google's endpoint to see if the key works, with zero format restrictions
   async testApiKeyConnection(rawKey, modelChoice) {
     const cleanKey = this.sanitizeApiKey(rawKey);
     if (!cleanKey) {
-      throw new Error("Key box is empty or contains no valid alphanumeric characters.");
+      throw new Error("API key input is empty. Please paste your key first.");
     }
 
-    if (cleanKey.startsWith("gsk_") || modelChoice === "groq-llama4") {
+    // If Groq is selected or key is from Groq
+    if (modelChoice === "groq-llama4" || cleanKey.startsWith("gsk_")) {
       const res = await fetch("https://api.groq.com/openai/v1/models", {
         headers: { "Authorization": `Bearer ${cleanKey}` }
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(`Groq Key Error (${res.status}): ${err?.error?.message || "Invalid Groq key"}`);
+        throw new Error(`Groq Key Error (${res.status}): ${err?.error?.message || "Invalid key"}`);
       }
-      return { provider: "Groq Cloud LPU", keyPreview: `${cleanKey.slice(0, 7)}...${cleanKey.slice(-4)}`, length: cleanKey.length };
+      return { provider: "Groq Cloud LPU" };
     }
 
-    if (!cleanKey.startsWith("AIza")) {
-      throw new Error(`Key starts with "${cleanKey.slice(0, 4)}..." instead of "AIza" (length: ${cleanKey.length}). Make sure you copied the API key from aistudio.google.com/apikey and not the Project ID.`);
-    }
-
-    // Test against Gemini models list endpoint using both header and query param
-    const testUrl = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=5&key=${encodeURIComponent(cleanKey)}`;
+    // Query Google Gemini API directly
+    const testUrl = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${encodeURIComponent(cleanKey)}`;
     const res = await fetch(testUrl, {
       method: "GET",
       headers: {
@@ -57,17 +50,12 @@ window.CloudVisionAndPrice = {
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       const msg = errData?.error?.message || `HTTP ${res.status}`;
-      throw new Error(`${msg} [Sent key: ${cleanKey.slice(0, 6)}...${cleanKey.slice(-4)}, len=${cleanKey.length}]. Fix: In Google AI Studio, click 'Create API key' -> 'Create API key in new project'.`);
+      throw new Error(msg);
     }
 
-    return {
-      provider: "Google Gemini API",
-      keyPreview: `${cleanKey.slice(0, 6)}...${cleanKey.slice(-4)}`,
-      length: cleanKey.length
-    };
+    return { provider: "Google Gemini API" };
   },
 
-  // Master prompt instructing strict anti-hallucination rules and complete room + spine detection
   getVisionPrompt(countryName) {
     return `You are a precision insurance contents inventory vision system operating in ${countryName}.
 Analyze this camera frame and detect ALL visible books (vertical spines, tilted books, or stacked/flat books) AND ALL non-book room items (shelving units, desks, chairs, tables, lamps, monitors, laptops, electronics, framed art, portraits, rugs, plants, decor).
@@ -112,7 +100,6 @@ CRITICAL RULES:
 4. bbox_2d coordinates must be normalized integers from 0 to 1000 [ymin, xmin, ymax, xmax].`;
   },
 
-  // Automatic Multi-Model Vision Call with Failover & Zero-Thinking-Delay Config
   async analyzeKeyframe(base64Jpeg, apiKey, modelChoice, countryName) {
     const t0 = performance.now();
     const cleanKey = this.sanitizeApiKey(apiKey);
@@ -121,14 +108,12 @@ CRITICAL RULES:
     }
     const prompt = this.getVisionPrompt(countryName);
 
-    // If key starts with gsk_ or user selected Groq, route to Groq Llama-4-Scout Vision
     if (cleanKey.startsWith("gsk_") || modelChoice === "groq-llama4") {
       const res = await this.callGroqVision(base64Jpeg, cleanKey, prompt);
       this.recordVisionLatency(performance.now() - t0);
       return res;
     }
 
-    // Build Gemini failover chain
     const modelsToTry = modelChoice === "gemini-2.0-flash"
       ? ["gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash"]
       : modelChoice === "gemini-2.5-flash-lite"
@@ -144,7 +129,6 @@ CRITICAL RULES:
       } catch (err) {
         console.warn(`Model ${modelName} failed or timed out, failing over...`, err.message);
         lastErr = err;
-        // If the API key itself is rejected as invalid, don't retry 3 times with the same bad key
         if (err.message.includes("API key not valid") || err.message.includes("API Key not found")) {
           break;
         }
@@ -157,7 +141,6 @@ CRITICAL RULES:
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      // Pass key in BOTH query string and x-goog-api-key header so browser extensions cannot strip it
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
 
       const generationConfig = {
@@ -192,7 +175,7 @@ CRITICAL RULES:
           const errJson = await response.json();
           errDetail = errJson?.error?.message || "";
         } catch (e) {}
-        throw new Error(`HTTP ${response.status} on ${modelName}${errDetail ? ": " + errDetail : ""} (Key: ${cleanKey.slice(0, 6)}... len=${cleanKey.length})`);
+        throw new Error(`HTTP ${response.status} on ${modelName}${errDetail ? ": " + errDetail : ""}`);
       }
 
       const data = await response.json();
@@ -208,7 +191,6 @@ CRITICAL RULES:
     }
   },
 
-  // Alternative Provider: Groq Llama-4-Scout-17B Vision
   async callGroqVision(base64Jpeg, groqKey, prompt) {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -240,7 +222,6 @@ CRITICAL RULES:
     this.stageLatenciesMs.keyframe_vision_avg_ms = Math.round(sum / this.visionCallTimes.length);
   },
 
-  // Cross-frame deduplication so overlapping sweeps never double count books or items
   deduplicateInventory(rawBooks, rawItems) {
     const t0 = performance.now();
     const uniqueBooks = [];
@@ -289,7 +270,6 @@ CRITICAL RULES:
     return { uniqueBooks, uniqueItems };
   },
 
-  // Sourced Book & Item Pricing via Google Books API + Open Library API
   async priceAllInventory(books, items, primaryLocale, secondaryLocale) {
     const t0 = performance.now();
     const [countryCode, currencyCode] = primaryLocale.split("|");
