@@ -11,38 +11,38 @@ window.CloudVisionAndPrice = {
   MODEL_PACING_PROFILES: {
     "auto-multi-pool": {
       label: "Smart Multi-Pool (3.5 Lite + 3.1 Lite + Gemma 4 26B)",
-      batchIntervalMs: 3800,
+      batchIntervalMs: 3600,
       maxBatchSize: 3,
-      maxPanCmPerSec: 20,
-      maxGyroDegPerSec: 70
+      maxPanCmPerSec: 22,
+      maxGyroDegPerSec: 72
     },
     "gemini-3.5-flash-lite": {
       label: "Gemini 3.5 Flash Lite (15 RPM / 500 RPD)",
       batchIntervalMs: 4200,
       maxBatchSize: 3,
-      maxPanCmPerSec: 18,
-      maxGyroDegPerSec: 65
+      maxPanCmPerSec: 20,
+      maxGyroDegPerSec: 68
     },
     "gemini-3.1-flash-lite": {
       label: "Gemini 3.1 Flash Lite (15 RPM / 500 RPD)",
       batchIntervalMs: 4200,
       maxBatchSize: 3,
-      maxPanCmPerSec: 18,
-      maxGyroDegPerSec: 65
+      maxPanCmPerSec: 20,
+      maxGyroDegPerSec: 68
     },
     "gemma-4-26b-a4b-it": {
       label: "Gemma 4 26B MoE Vision (30 RPM / 14.4K RPD)",
-      batchIntervalMs: 3200,
+      batchIntervalMs: 3000,
       maxBatchSize: 3,
-      maxPanCmPerSec: 22,
-      maxGyroDegPerSec: 75
+      maxPanCmPerSec: 24,
+      maxGyroDegPerSec: 78
     },
     "gemma-4-31b-it": {
       label: "Gemma 4 31B Vision (30 RPM / 14.4K RPD)",
-      batchIntervalMs: 3500,
+      batchIntervalMs: 3300,
       maxBatchSize: 3,
-      maxPanCmPerSec: 20,
-      maxGyroDegPerSec: 72
+      maxPanCmPerSec: 22,
+      maxGyroDegPerSec: 75
     },
     "gemini-3.6-flash": {
       label: "Gemini 3.6 Flash (5 RPM / 20 RPD)",
@@ -55,15 +55,15 @@ window.CloudVisionAndPrice = {
       label: "Gemini 2.5 Flash Lite (10 RPM / 20 RPD)",
       batchIntervalMs: 5500,
       maxBatchSize: 3,
-      maxPanCmPerSec: 16,
-      maxGyroDegPerSec: 60
+      maxPanCmPerSec: 18,
+      maxGyroDegPerSec: 62
     },
     "groq-llama4": {
       label: "Groq LPU Llama-4-Scout (30 RPM)",
-      batchIntervalMs: 3000,
+      batchIntervalMs: 2800,
       maxBatchSize: 1,
-      maxPanCmPerSec: 24,
-      maxGyroDegPerSec: 80
+      maxPanCmPerSec: 25,
+      maxGyroDegPerSec: 82
     }
   },
 
@@ -124,20 +124,32 @@ window.CloudVisionAndPrice = {
     return { provider: `${testModel} (Verified Active)` };
   },
 
-  getBatchVisionPrompt(framesBatch, countryName, currencyCode) {
+  // Builds a spatial-aware batch vision prompt that includes 3D camera angles AND already-logged memory!
+  getBatchVisionPrompt(framesBatch, countryName, currencyCode, alreadyLoggedMemory) {
     const frameDescriptions = framesBatch.map((f, i) => {
       const notes = f.voiceNotes && f.voiceNotes.length > 0
-        ? `User spoken notes during this frame: "${f.voiceNotes.join("; ")}"`
+        ? `User spoken notes: "${f.voiceNotes.join("; ")}"`
         : "No user override notes (default: count all items as belonging to the user).";
-      return `Image #${i + 1} has frame_ref="${f.frameRef}" (${f.filename}). ${notes}`;
+      const poseStr = f.pose
+        ? `3D Camera Pose: Yaw=${f.pose.yaw}°, Pitch=${f.pose.pitch}°, CumulativeFOVPan=${f.pose.fovPanX}%`
+        : "";
+      return `Image #${i + 1}: frame_ref="${f.frameRef}" (${f.filename}). ${poseStr}. ${notes}`;
     }).join("\n");
 
-    return `You are a precision insurance contents inventory vision and valuation system operating in ${countryName} (Currency: ${currencyCode}).
-You are given ${framesBatch.length} unique camera frame(s) from a room sweep:
-${frameDescriptions}
+    const memoryContext = alreadyLoggedMemory && (alreadyLoggedMemory.books.length > 0 || alreadyLoggedMemory.items.length > 0)
+      ? `\nALREADY LOGGED IN EARLIER SPATIAL SECTORS (DO NOT REPEAT THESE IF THEY ARE THE SAME PHYSICAL OBJECT SEEN AT THE EDGE OF THE NEW FRAME):
+- Previously Logged Books: ${alreadyLoggedMemory.books.slice(-30).join(" | ") || "None"}
+- Previously Logged Room Items: ${alreadyLoggedMemory.items.slice(-20).join(" | ") || "None"}\n`
+      : "";
 
-For EACH frame, detect ALL visible books (vertical spines, tilted, or stacked/flat) AND ALL non-book room items (beds, tables, desks, chairs, shelving units, lamps, monitors, laptops, electronics, framed art, wall portraits, rugs, plants, decor).
-For each identified book and non-book item, also provide realistic local market pricing in ${currencyCode} (for ${countryName}) based on the specific title/edition or specific item material/size/brand visible.
+    return `You are a precision insurance contents inventory vision and valuation system operating in ${countryName} (Currency: ${currencyCode}).
+You are given ${framesBatch.length} camera frame(s) from new 3D spatial sectors of a room sweep:
+${frameDescriptions}
+${memoryContext}
+For EACH frame, detect NEW visible books (vertical spines, tilted, or stacked/flat) AND NEW non-book room items (beds, tables, desks, chairs, shelving units, lamps, monitors, laptops, electronics, framed art, wall portraits, rugs, plants, decor).
+CRITICAL ANTI-REPETITION RULE:
+- If an item or book in Image #2 or #3 is already logged in Image #1 of this batch OR is clearly the exact same physical object listed in "ALREADY LOGGED IN EARLIER SPATIAL SECTORS" above (seen from a slightly overlapping camera angle), DO NOT output it again (or set "is_duplicate": true).
+- Price each unique book and item realistically for ${countryName} in ${currencyCode} based on its specific title/binding or material/size.
 
 Return ONLY valid JSON matching this exact structure:
 {
@@ -149,6 +161,7 @@ Return ONLY valid JSON matching this exact structure:
       "books": [
         {
           "position": 1,
+          "is_duplicate": false,
           "status": "identified | unidentified | needs_appraisal",
           "title": "Exact spine/cover title if clearly human-legible, else empty string",
           "author": "Author on spine if legible, else empty string",
@@ -163,6 +176,7 @@ Return ONLY valid JSON matching this exact structure:
       ],
       "items": [
         {
+          "is_duplicate": false,
           "category": "shelving | furniture | lighting | electronics | framed_art | rug | decor",
           "description": "Specific visual description (e.g., Wooden Single Bed, Study Desk, LED Desk Lamp, Plastic Chair)",
           "brand_model": "Only if legible on item, else empty string",
@@ -182,21 +196,16 @@ Return ONLY valid JSON matching this exact structure:
     "estimated_width_m": 3.5,
     "shape_note": "rectangular"
   }
-}
-CRITICAL RULES:
-1. Analyze EVERY image in the batch and tag its results with its exact "frame_ref".
-2. Price items realistically for ${countryName} in ${currencyCode}: e.g., in India (INR), a standard paperback book is typically ₹250–₹499 new (₹140–₹260 used), a plastic chair is ₹600–₹1,200, a wooden study table is ₹3,000–₹7,000, a wooden bed is ₹12,000–₹25,000, a desk lamp is ₹450–₹1,200. NEVER give all items the same price!
-3. NEVER guess a title for a blurry or unreadable book spine (set status="unidentified", title="", author="").
-4. bbox_2d coordinates must be normalized integers from 0 to 1000 [ymin, xmin, ymax, xmax].`;
+}`;
   },
 
-  async analyzeKeyframeBatch(framesBatch, apiKey, modelChoice, countryName, currencyCode = "INR") {
+  async analyzeKeyframeBatch(framesBatch, apiKey, modelChoice, countryName, currencyCode = "INR", alreadyLoggedMemory = null) {
     const t0 = performance.now();
     const cleanKey = this.sanitizeApiKey(apiKey);
     if (!cleanKey) {
       throw new Error("API key is empty. Please paste your key in the top bar.");
     }
-    const prompt = this.getBatchVisionPrompt(framesBatch, countryName, currencyCode);
+    const prompt = this.getBatchVisionPrompt(framesBatch, countryName, currencyCode, alreadyLoggedMemory);
 
     if (cleanKey.startsWith("gsk_") || modelChoice === "groq-llama4") {
       const singleRes = await this.callGroqVision(framesBatch[0].base64, cleanKey, prompt);
@@ -354,12 +363,13 @@ CRITICAL RULES:
     this.stageLatenciesMs.keyframe_vision_avg_ms = Math.round(sum / this.visionCallTimes.length);
   },
 
+  // Enhanced Cross-Frame Deduplication (Combines AI is_duplicate flag, title/author token overlap, and item subtype matching)
   deduplicateInventory(rawBooks, rawItems, excludedFrameRefs = new Set()) {
     const t0 = performance.now();
     const uniqueBooks = [];
 
     for (const b of rawBooks) {
-      if (excludedFrameRefs.has(b.frame_ref) || b.excluded_by_user) continue;
+      if (excludedFrameRefs.has(b.frame_ref) || b.excluded_by_user || b.is_duplicate) continue;
 
       if (b.status === "identified" && (!b.title || b.id_confidence < 0.62)) {
         b.status = "unidentified";
@@ -371,7 +381,8 @@ CRITICAL RULES:
 
       if (b.status === "identified" && b.title) {
         const existing = uniqueBooks.find(
-          u => u.status === "identified" && this.stringSimilarity(u.title, b.title) > 0.78
+          u => u.status === "identified" &&
+               (this.stringSimilarity(u.title, b.title) > 0.72 || this.isSubstringMatch(u.title, b.title))
         );
         if (existing) {
           if ((b.id_confidence || 0) > (existing.id_confidence || 0)) {
@@ -385,7 +396,7 @@ CRITICAL RULES:
                u.shelf === b.shelf &&
                u.position === b.position &&
                u.frame_ref !== b.frame_ref &&
-               Math.abs((u.spine_height_cm || 21) - (b.spine_height_cm || 21)) < 1.5
+               Math.abs((u.spine_height_cm || 21) - (b.spine_height_cm || 21)) < 1.8
         );
         if (dupUnidentified) continue;
       }
@@ -394,10 +405,12 @@ CRITICAL RULES:
 
     const uniqueItems = [];
     for (const item of rawItems) {
-      if (excludedFrameRefs.has(item.frame_ref) || item.excluded_by_user) continue;
+      if (excludedFrameRefs.has(item.frame_ref) || item.excluded_by_user || item.is_duplicate) continue;
 
       const existing = uniqueItems.find(
-        u => u.category === item.category && this.stringSimilarity(u.description, item.description) > 0.70
+        u => u.category === item.category &&
+             (this.stringSimilarity(u.description, item.description) > 0.62 ||
+              this.sameFurnitureSubtype(u.description, item.description))
       );
       if (!existing) uniqueItems.push(item);
     }
@@ -406,8 +419,23 @@ CRITICAL RULES:
     return { uniqueBooks, uniqueItems };
   },
 
-  // Accurate Multi-Tier Book & Non-Book Valuation Engine:
-  // Combines Batched AI Local Catalog Pricing + Google Books API + Open Library API + Item-Specific Subtype Valuation
+  isSubstringMatch(a, b) {
+    const s1 = (a || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const s2 = (b || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (s1.length < 5 || s2.length < 5) return false;
+    return s1.includes(s2) || s2.includes(s1);
+  },
+
+  sameFurnitureSubtype(descA, descB) {
+    const a = (descA || "").toLowerCase();
+    const b = (descB || "").toLowerCase();
+    const subtypes = ["bed", "study table", "study desk", "dining table", "laptop", "monitor", "television", "ceiling fan", "rug", "carpet"];
+    for (const st of subtypes) {
+      if (a.includes(st) && b.includes(st)) return true;
+    }
+    return false;
+  },
+
   async priceAllInventory(books, items, primaryLocale, secondaryLocale, apiKey, modelChoice) {
     const t0 = performance.now();
     const [countryCode, currencyCode] = primaryLocale.split("|");
@@ -422,7 +450,6 @@ CRITICAL RULES:
 
     const identifiedBooks = books.filter(b => b.status === "identified" && b.title);
 
-    // Step 1: Run 1 single batched Cloud Catalog Valuation call to get accurate local retail & used prices for all books & room items
     if (apiKey && (identifiedBooks.length > 0 || items.length > 0)) {
       await this.runBatchedMarketValuation(
         identifiedBooks,
@@ -436,7 +463,6 @@ CRITICAL RULES:
       ).catch(e => console.warn("Batched market valuation fallback:", e.message));
     }
 
-    // Step 2: Enrich identified books with Google Books & Open Library metadata (ISBN-13, Edition, Clickable URLs, Live Retail Check)
     for (let i = 0; i < identifiedBooks.length; i += 6) {
       const batch = identifiedBooks.slice(i, i + 6);
       await Promise.all(
@@ -446,7 +472,6 @@ CRITICAL RULES:
       );
     }
 
-    // Step 3: Build 10-book Secondary Country comparison table with real locale prices
     const secondaryComparison = [];
     const sample10 = identifiedBooks.slice(0, 10);
     for (let i = 0; i < sample10.length; i++) {
@@ -473,7 +498,6 @@ CRITICAL RULES:
       });
     }
 
-    // Step 4: Finalize Non-Book Items with item-specific dimensions, material, and catalog prices
     for (const item of items) {
       this.priceNonBookItem(item, countryCode, currencyCode, convertAmount, nowIso);
     }
@@ -482,7 +506,6 @@ CRITICAL RULES:
     return { secondaryComparison };
   },
 
-  // Single 1-Request Batched Valuation Call for accurate, realistic local store prices (Amazon.in/Flipkart/Pepperfry/Amazon.com)
   async runBatchedMarketValuation(identifiedBooks, items, countryCode, currencyCode, secCountryCode, secCurrencyCode, rawKey, modelChoice) {
     const cleanKey = this.sanitizeApiKey(rawKey);
     if (!cleanKey || cleanKey.startsWith("gsk_")) return;
@@ -623,7 +646,6 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
           return;
         }
 
-        // Check if Google Books returned a sensible local retail price (filtering out 10,000+ INR institutional library imports)
         const priceObj = (sale.retailPrice?.amount > 0) ? sale.retailPrice : sale.listPrice;
         if (priceObj && priceObj.amount > 0) {
           const rawAmt = priceObj.amount;
@@ -653,7 +675,6 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
           }
         }
 
-        // Use AI Batched Local Market Valuation if available, linked to Google Books / Store URL
         if (book.local_new_price && book.local_new_price > 0) {
           const finalNew = Number(book.local_new_price.toFixed(2));
           const finalUsed = Number((book.local_used_price || finalNew * 0.55).toFixed(2));
@@ -675,7 +696,6 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
         }
       }
 
-      // Fallback if book had local_new_price from vision/batch call even when Google Books was unreachable
       if (book.local_new_price && book.local_new_price > 0) {
         const finalNew = Number(book.local_new_price.toFixed(2));
         const finalUsed = Number((book.local_used_price || finalNew * 0.55).toFixed(2));
@@ -696,7 +716,6 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
         return;
       }
 
-      // Final realistic fallback by spine size
       const defaultInr = 299 + ((bookIdx * 47) % 250);
       const finalNew = currencyCode === "INR" ? defaultInr : convertAmount(14.99, "USD", currencyCode);
       book.replacement_cost = {
@@ -718,7 +737,6 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
     }
   },
 
-  // Item-Specific Non-Book Pricing: Uses exact item description, dimensions, and local retail catalog prices
   priceNonBookItem(item, countryCode, currencyCode, convertAmount, nowIso) {
     const shopUrl = countryCode === "IN"
       ? `https://www.amazon.in/s?k=${encodeURIComponent((item.brand_model || "") + " " + item.description)}`
@@ -743,7 +761,6 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
       return;
     }
 
-    // 1. If Vision or Batched Market Valuation returned specific local_price_low & local_price_high for this exact item, use it!
     if (item.local_price_low > 0 && item.local_price_high > 0) {
       item.status = "range";
       item.replacement_cost = {
@@ -756,7 +773,6 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
       return;
     }
 
-    // 2. Otherwise, match specific sub-type keywords in item.description (Bed vs Table vs Chair vs Lamp vs Laptop)
     const desc = ((item.description || "") + " " + (item.brand_model || "")).toLowerCase();
     let inrRange = [1200, 2800];
 

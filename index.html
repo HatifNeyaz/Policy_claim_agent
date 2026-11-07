@@ -28,7 +28,8 @@
         <h1>Library Claim Agent</h1>
       </div>
       <div class="top-quick-actions">
-        <button type="button" class="help-q-btn" data-help="marking" title="How Live Marking Works">? Marking Guide</button>
+        <button type="button" class="help-q-btn" data-help="spatial" title="How 3D Spatial + Visual Odometry Works">? Spatial AI</button>
+        <button type="button" class="help-q-btn" data-help="marking" title="How Live Marking Works">? Marking</button>
         <button type="button" id="clearCacheBtn" class="btn-secondary btn-xs" title="Deletes downloaded WASM/TFLite models and browser storage">
           🗑️ Clear Cache
         </button>
@@ -37,7 +38,7 @@
 
     <details id="setupDrawer" class="setup-drawer" open>
       <summary class="setup-summary">
-        <span>⚙️ <strong>Setup, API Key & Calibration Values</strong> (Tap to show/hide)</span>
+        <span>⚙️ <strong>Setup, API Key & Spatial Sensitivity</strong> (Tap to show/hide)</span>
         <span class="summary-hint">Auto-hides during sweep</span>
       </summary>
 
@@ -101,10 +102,10 @@
 
         <div class="input-group">
           <label for="pixelThresholdInput">
-            Unique Pixel Threshold (%)
+            Spatial + Visual Gate Sensitivity (%)
             <button type="button" class="help-q-btn" data-help="threshold">?</button>
           </label>
-          <input type="number" id="pixelThresholdInput" value="28" min="15" max="55" step="1" />
+          <input type="number" id="pixelThresholdInput" value="22" min="12" max="45" step="1" />
         </div>
 
         <div class="input-group">
@@ -125,21 +126,22 @@
   <main class="workspace no-print">
     <!-- LEFT / TOP: CAMERA & ON-DEVICE SEGMENTATION VIEWPORT -->
     <section class="viewport-card">
-      <!-- COMPACT HUD PILLS -->
+      <!-- COMPACT HUD PILLS WITH LIVE 3D SPATIAL POSE & VISUAL ODOMETRY -->
       <div class="hud-bar">
         <span id="sweepTimer" class="hud-pill">⏱️ 00:00</span>
-        <span id="pixelDiffBadge" class="hud-pill">🔄 Change: 0% / 28%</span>
+        <span id="spatialPoseBadge" class="hud-pill">🧭 Pose: 0° Yaw / 0° Pitch</span>
+        <span id="pixelDiffBadge" class="hud-pill">🔄 Novelty: 0% | Pan: 0% FOV</span>
         <span id="sharpnessBadge" class="hud-pill">🎯 Sharp: --</span>
         <span id="queueBadge" class="hud-pill">☁️ Queue: 0</span>
         <span id="modelBadge" class="hud-pill">🧠 AI Ready</span>
       </div>
 
-      <!-- TRAFFIC-LIGHT STATUS BAR + PIXEL UNIQUENESS METER -->
+      <!-- TRAFFIC-LIGHT STATUS BAR + MULTI-CONDITION READINESS METER -->
       <div class="pacing-panel">
         <div id="moveTrafficBanner" class="traffic-banner waiting">
-          ⏸️ Tap "Start Sweep" — Camera snaps automatically when ≥28% of the view changes
+          ⏸️ Tap "Start Sweep" — Uses 3D Compass Pose + Optical Flow + Edge AI to snap only truly new views
         </div>
-        <div class="progress-track" title="Scene uniqueness progress toward snapping next photo">
+        <div class="progress-track" title="Combined Spatial Pose + Visual Odometry readiness toward next unique snap">
           <div id="captureProgressBar" class="progress-fill" style="width: 0%;"></div>
         </div>
       </div>
@@ -149,11 +151,11 @@
         <video id="cameraVideo" playsinline muted></video>
         <canvas id="overlayCanvas"></canvas>
         <div id="whiteScreenFlash" class="white-screen-flash hidden"></div>
-        <div id="shutterFlash" class="shutter-flash hidden">📸 UNIQUE FRAME SNAPPED!</div>
+        <div id="shutterFlash" class="shutter-flash hidden">📸 NEW SPATIAL SECTOR SNAPPED!</div>
         <div id="alertBanner" class="alert-banner hidden">⚠️ Hold steady for a moment to snap!</div>
       </div>
 
-      <!-- MAIN ACTION CONTROLS (Directly under camera for easy thumb reach on mobile) -->
+      <!-- MAIN ACTION CONTROLS -->
       <div class="control-bar">
         <button type="button" id="startSweepBtn" class="btn-primary">📹 Start Sweep</button>
         <button type="button" id="captureKeyframeBtn" class="btn-secondary" disabled>📸 Snap Now</button>
@@ -186,8 +188,8 @@
       <!-- CAPTURED FILMSTRIP MEMORY BAR -->
       <div class="live-filmstrip-bar">
         <div class="filmstrip-header">
-          <span>🎞️ <strong>Captured Unique Frames</strong> (Tap any photo to toggle ✅ Yours / 🚫 Not Mine):</span>
-          <span id="filmstripHint">0 snapped</span>
+          <span>🎞️ <strong>Visited 3D Spatial Sectors</strong> (Tap any photo to toggle ✅ Yours / 🚫 Not Mine):</span>
+          <span id="filmstripHint">0 sectors</span>
         </div>
         <div id="liveFilmstrip" class="filmstrip-scroll"></div>
       </div>
@@ -210,7 +212,7 @@
         </div>
         <div class="kpi-box">
           <span class="kpi-val" id="liveFrameCount">0</span>
-          <span class="kpi-lbl">Frames</span>
+          <span class="kpi-lbl">Sectors</span>
         </div>
       </div>
 
@@ -222,7 +224,7 @@
 
       <div id="booksTab" class="tab-content active">
         <div id="liveBooksList" class="live-list">
-          <p class="empty-hint">Books will appear here live as unique frames are scanned...</p>
+          <p class="empty-hint">Books will appear here live as unique spatial sectors are scanned...</p>
         </div>
       </div>
 

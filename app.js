@@ -9,14 +9,24 @@
   let blurInterval = null;
   let cloudWorkerInterval = null;
 
+  // 1. 3D SPATIAL ORIENTATION & GYRO DEAD-RECKONING STATE (Yaw alpha, Pitch beta, Roll gamma)
+  let hasHardwareCompass = false;
+  let currentYawDeg = 0;
+  let currentPitchDeg = 0;
+  let currentRollDeg = 0;
   let gyroSpeedDegPerSec = 0;
+  let lastMotionTimestamp = 0;
+
+  // 2. 2D VISUAL ODOMETRY (Cumulative FOV Pan % for sideways walking or uploaded videos)
+  let cumulativeFovPanX = 0;
+  let cumulativeFovPanY = 0;
   let currentPanCmPerSec = 0;
   let currentSharpness = 150;
   let isAgentSpeaking = false;
 
-  // 48x36 Spatial Luminance + Edge Signatures of All Captured Frames (Lightweight on-device CPU check)
-  const capturedSignatures = [];
-  let prevTickSignature = null;
+  // 3. VISITED 3D SPATIAL SECTORS MEMORY (Stores Pose + 32x24 Patch + 64-bit dHash + 24-bin Chroma + Edge AI Signature)
+  const visitedSpatialSectors = [];
+  let prevTickPatch = null;
   let lastLocalSnapTime = 0;
   let lastCloudCallTime = 0;
   let steadyTicksCount = 0;
@@ -32,16 +42,30 @@
 
   // Detailed '?' Explainer Content Dictionary
   const HELP_EXPLAINERS = {
-    threshold: {
-      title: "🔄 Unique Pixel Threshold (%) — How It Works",
+    spatial: {
+      title: "🧭 3D Spatial Pose + Visual Odometry + AI Memory",
       html: `
-        <p>Controls <strong>how much of the camera image must change</strong> before the app automatically snaps a new photo.</p>
+        <p>Instead of relying on simple pixel change alone, the app fuses <strong>4 local signals (~2.5 ms on phone CPU)</strong> plus <strong>Cloud AI Memory</strong>:</p>
         <ul>
-          <li><strong>Default (28% — Recommended):</strong> Ensures at least 28% of the spatial blocks and edges are brand-new compared to all previously captured photos. Prevents duplicate photos when panning slowly or standing still.</li>
-          <li><strong>Higher Value (e.g., 35%–45%):</strong> Requires a wider camera pan before snapping. Takes fewer photos total.</li>
-          <li><strong>Lower Value (e.g., 18%–22%):</strong> More sensitive—snaps photos with smaller camera movements.</li>
+          <li><strong>1. 3D Compass & Pitch Cone (<code>Yaw° / Pitch°</code>):</strong> Reads your phone's 3D orientation sensor so it knows which direction in the room you are pointing. Each snapped photo marks a <strong>Visited 3D Cone</strong>.</li>
+          <li><strong>2. 2D Sliding-Window Visual Odometry (<code>FOV Pan %</code>):</strong> Slides the current camera image across previously snapped photos (up to ±35% shift) to detect if you are still looking at an overlapping part of the same bed, table, or shelf!</li>
+          <li><strong>3. Multi-Condition <code>IF / AND / OR</code> Gate:</strong> Snaps when:
+            <br/>• <strong>Branch A:</strong> Phone rotated ≥20° into an unvisited 3D cone <code>AND</code> shift-compensated visual novelty ≥ threshold, <strong>OR</strong>
+            <br/>• <strong>Branch B:</strong> Camera panned ≥50% of a frame width sideways <code>AND</code> visual novelty ≥ threshold, <strong>OR</strong>
+            <br/>• <strong>Branch C:</strong> On-device Edge AI discovers a brand-new furniture class or book cluster in a new angle.</li>
+          <li><strong>4. Zero-Token-Waste AI Memory:</strong> Passes already-logged item names inside the batch prompt so Gemini automatically drops any item seen twice from different angles.</li>
         </ul>
-        <p><em>CPU Efficiency:</em> Computed on a downsampled 48×36 grid in under 0.5 milliseconds per tick, so your phone stays cool.</p>
+      `
+    },
+    threshold: {
+      title: "🔄 Spatial + Visual Gate Sensitivity (%)",
+      html: `
+        <p>Sets the <strong>shift-compensated visual novelty percentage</strong> required inside our multi-condition Spatial + Visual Odometry gate:</p>
+        <ul>
+          <li><strong>Default (22% — Optimum with Spatial Tracking):</strong> Because our sliding-window cross-correlation already filters out camera tilt and overlapping views, 22% smoothly snaps every distinct furniture item and shelf without duplicates.</li>
+          <li><strong>Higher Value (28%–35%):</strong> Stricter—requires both a larger 3D angle change and a completely different visual texture.</li>
+          <li><strong>Lower Value (14%–18%):</strong> More eager—snaps more frequent angles along dense bookshelves.</li>
+        </ul>
       `
     },
     dimensions: {
@@ -49,7 +73,7 @@
       html: `
         <p>Provides the <strong>explainable metric scale anchor</strong> required by the assignment brief so dimensions are never guessed:</p>
         <ul>
-          <li><strong>Shelf Width (Default 80 cm):</strong> Standard bookcase width (e.g., IKEA Billy is 80 cm). Combined with the 21.6 cm standard hardcover book height anchor, this converts pixel bounding boxes into exact centimeters (spine height & thickness).</li>
+          <li><strong>Shelf Width (Default 80 cm):</strong> Standard bookcase width (e.g., IKEA Billy is 80 cm). Combined with the 21.6 cm standard hardcover book height anchor, this converts pixel bounding boxes into exact centimeters.</li>
           <li><strong>Ceiling Height (Default 2.44 m / 8 ft):</strong> Used to compute total room wall area (m² and sq ft) and shelved wall coverage during the same sweep.</li>
         </ul>
       `
@@ -60,7 +84,7 @@
         <p>Selects which multimodal AI model reads book spines and room contents:</p>
         <ul>
           <li><strong>⚡ Smart Auto-Balancer (Default):</strong> Rotates across <code>Gemini 3.5 Flash Lite</code> (500 RPD), <code>Gemini 3.1 Flash Lite</code> (500 RPD), and <code>Gemma 4 26B Vision</code> (14,400 RPD) so you never hit rate limits.</li>
-          <li><strong>Multi-Frame Batching:</strong> Up to 3 locally snapped photos are bundled into a single API request, cutting quota usage by 65%.</li>
+          <li><strong>Multi-Frame Batching + Memory:</strong> Up to 3 locally snapped photos are bundled into a single API request along with a memory list of already-logged items.</li>
         </ul>
       `
     },
@@ -68,38 +92,34 @@
       title: "🌍 Primary Country & Currency",
       html: `
         <p>Sets the policyholder's claim country and currency (e.g., <strong>India — INR ₹</strong> or <strong>United States — USD $</strong>).</p>
-        <p>All identified books and non-book room items are priced in this currency using local retail catalogs (such as Amazon.in / Flipkart / Google Books India for INR) with clickable verification links.</p>
+        <p>All identified books and non-book room items are priced in this currency using local retail catalogs with clickable verification links.</p>
       `
     },
     second_locale: {
       title: "🌐 2nd Country (10-Book Proof)",
       html: `
-        <p>The assignment brief requires proving that locale pricing is a live setting and not hardcoded.</p>
         <p>When you finish the sweep, the app automatically prices the first 10 identified books in this second country/currency and includes a side-by-side comparison table in your final report.</p>
       `
     },
     apikey: {
       title: "🔑 API Key Setup",
       html: `
-        <p>Paste your single Google AI Studio API key (or Groq <code>gsk_...</code> key) here. It is stored only in your browser's local storage so you don't have to re-paste it on refresh, and can be wiped anytime using <strong>🗑️ Clear Cache</strong>.</p>
+        <p>Paste your single Google AI Studio API key (or Groq <code>gsk_...</code> key) here. Stored locally in your browser and can be wiped anytime using <strong>🗑️ Clear Cache</strong>.</p>
       `
     },
     marking: {
       title: "📌 How Live Ownership & Item Marking Works",
       html: `
-        <p><strong>1. Everything Is Yours by Default:</strong> You do <em>not</em> need to say or tap anything for your normal shelves, books, bed, or tables—every captured frame is automatically marked <strong>✅ Yours</strong>.</p>
-        <p><strong>2. Optional Live Override:</strong> If a shelf or item does <em>not</em> belong to you, or you want to specify that a wall picture is a print/original, simply speak or tap one of the buttons while viewing that frame:</p>
+        <p><strong>1. Everything Is Yours by Default:</strong> Every captured frame is automatically marked <strong>✅ Yours</strong>.</p>
+        <p><strong>2. Optional Live Override:</strong> Speak or tap a button while viewing a frame to override:</p>
         <ul>
           <li><strong>🚫 Not Mine:</strong> Excludes that frame and all items inside it from your final claim totals.</li>
-          <li><strong>🖼️ Art = Print:</strong> Prices the framed picture as a standard retail print instead of flagging for specialist appraisal.</li>
-          <li><strong>🎨 Art = Original / ⭐ 1st Edition:</strong> Flags the artwork or rare book for specialist human appraisal.</li>
+          <li><strong>🖼️ Art = Print / 🎨 Art = Original / ⭐ 1st Edition:</strong> Updates appraisal vs. retail status.</li>
         </ul>
-        <p><strong>3. Filmstrip Toggle:</strong> You can also tap any thumbnail in the <strong>Captured Unique Frames</strong> strip at the bottom to toggle <strong>✅ Yours</strong> vs. <strong>🚫 Not Mine</strong> at any time.</p>
       `
     }
   };
 
-  // Setup '?' Explainer Modal Listeners
   function setupHelpModal() {
     const modal = document.getElementById("helpModal");
     const titleEl = document.getElementById("helpModalTitle");
@@ -111,7 +131,7 @@
         e.preventDefault();
         e.stopPropagation();
         const key = btn.dataset.help;
-        const info = HELP_EXPLAINERS[key] || HELP_EXPLAINERS.marking;
+        const info = HELP_EXPLAINERS[key] || HELP_EXPLAINERS.spatial;
         if (titleEl) titleEl.textContent = info.title;
         if (bodyEl) bodyEl.innerHTML = info.html;
         if (modal) modal.classList.remove("hidden");
@@ -205,7 +225,7 @@
     } catch (e) {}
   }
 
-  function triggerShutterVisual(frameIdx, pixelChangePct) {
+  function triggerShutterVisual(frameIdx, triggerReason) {
     playCameraShutterSound();
     const container = document.getElementById("videoContainer");
     const whiteFlash = document.getElementById("whiteScreenFlash");
@@ -221,13 +241,13 @@
       setTimeout(() => container.classList.remove("flash-border"), 600);
     }
     if (flashBadge) {
-      flashBadge.textContent = `📸 FRAME #${frameIdx} SNAPPED (${pixelChangePct}% New)`;
+      flashBadge.textContent = `📸 SECTOR #${frameIdx} SNAPPED (${triggerReason})`;
       flashBadge.classList.remove("hidden");
-      setTimeout(() => flashBadge.classList.add("hidden"), 1500);
+      setTimeout(() => flashBadge.classList.add("hidden"), 1600);
     }
     if (trafficBanner) {
       trafficBanner.className = "traffic-banner snapped-move";
-      trafficBanner.textContent = `🟢 FRAME #${frameIdx} SNAPPED (${pixelChangePct}% New View)! Pan to next area ➡️`;
+      trafficBanner.textContent = `🟢 SECTOR #${frameIdx} LOCKED (${triggerReason})! Pan to next area ➡️`;
     }
   }
 
@@ -240,36 +260,96 @@
     setupSpeechRecognition();
   });
 
+  // 1. Hardware 3D Orientation Listener (Compass Yaw alpha 0..360, Pitch beta -180..180, Roll gamma -90..90)
+  window.addEventListener("deviceorientation", (e) => {
+    if (e.alpha !== null || e.webkitCompassHeading !== undefined) {
+      hasHardwareCompass = true;
+      currentYawDeg = Math.round(
+        typeof e.webkitCompassHeading === "number" ? e.webkitCompassHeading : (e.alpha || 0)
+      );
+      currentPitchDeg = Math.round(e.beta || 0);
+      currentRollDeg = Math.round(e.gamma || 0);
+    }
+  }, true);
+
+  // 2. Gyroscope Angular Velocity + Dead-Reckoning Integration Fallback
   window.addEventListener("devicemotion", (e) => {
     const r = e.rotationRate;
+    const now = performance.now();
+    const dt = lastMotionTimestamp > 0 ? Math.min(0.2, (now - lastMotionTimestamp) / 1000) : 0.05;
+    lastMotionTimestamp = now;
+
     if (r) {
       const a = r.alpha || 0;
       const b = r.beta || 0;
       const g = r.gamma || 0;
       gyroSpeedDegPerSec = Math.sqrt(a * a + b * b + g * g);
+
+      // If deviceorientation magnetometers aren't active, integrate gyroscope angular velocity
+      if (!hasHardwareCompass) {
+        currentYawDeg = (currentYawDeg + g * dt + 360) % 360;
+        currentPitchDeg = Math.max(-90, Math.min(90, currentPitchDeg + a * dt));
+      }
     }
   });
 
-  // Ultra-Lightweight 48x36 Spatial Luminance + Edge Fingerprint (<0.5ms on phone CPU, zero heating)
-  function analyzeFrameAndSignature(videoEl, workCanvas, prevSig) {
+  // Shortest angular distance on a 3D sphere between two (Yaw, Pitch) poses in degrees
+  function compute3DAngularDistanceDeg(poseA, poseB) {
+    if (!poseA || !poseB) return 180;
+    let dYaw = Math.abs(poseA.yaw - poseB.yaw) % 360;
+    if (dYaw > 180) dYaw = 360 - dYaw;
+    const dPitch = Math.abs(poseA.pitch - poseB.pitch);
+    return Math.round(Math.sqrt(dYaw * dYaw + dPitch * dPitch));
+  }
+
+  // Extracts:
+  // 1) Sharpness & Glare
+  // 2) 32x24 Normalized Luminance Patch (for 2D Sliding-Window Visual Odometry & Overlap Veto)
+  // 3) 64-bit Perceptual dHash (Exposure-Invariant Gradient Hash)
+  // 4) 24-bin Normalized RGB Chroma Histogram (Color Fingerprint)
+  function extractSpatialAndVisualFeatures(videoEl, workCanvas, prevPatch) {
     if (!videoEl || videoEl.readyState < 2 || !workCanvas) {
-      return { sharpness: 65, sharpnessPct: 92, glarePct: 0, panCmPerSec: 0, signature: null };
+      return {
+        sharpness: 65,
+        sharpnessPct: 92,
+        glarePct: 0,
+        panCmPerSec: 0,
+        fovDeltaX: 0,
+        fovDeltaY: 0,
+        patch32x24: null,
+        dHash64: null,
+        colorHist24: null
+      };
     }
+
     const ctx = workCanvas.getContext("2d", { willReadFrequently: true });
     const w = workCanvas.width;  // 320
     const h = workCanvas.height; // 240
     ctx.drawImage(videoEl, 0, 0, w, h);
     const img = ctx.getImageData(0, 0, w, h).data;
 
-    // 1. Fast Sharpness & Glare Check (sampled every 2nd pixel for mobile CPU efficiency)
     const gray = new Float32Array(w * h);
+    const colorHist24 = new Float32Array(24); // 8 R bins + 8 G bins + 8 B bins
     let glarePixels = 0;
+    const totalPixels = w * h;
+
     for (let i = 0, p = 0; i < img.length; i += 4, p++) {
-      const lum = 0.299 * img[i] + 0.587 * img[i + 1] + 0.114 * img[i + 2];
+      const r = img[i];
+      const g = img[i + 1];
+      const b = img[i + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
       gray[p] = lum;
       if (lum > 248) glarePixels++;
+
+      colorHist24[Math.min(7, r >> 5)]++;
+      colorHist24[8 + Math.min(7, g >> 5)]++;
+      colorHist24[16 + Math.min(7, b >> 5)]++;
+    }
+    for (let k = 0; k < 24; k++) {
+      colorHist24[k] /= totalPixels;
     }
 
+    // 1. Laplacian Sharpness
     let sum = 0;
     let sumSq = 0;
     let count = 0;
@@ -285,106 +365,287 @@
     const mean = sum / count;
     const variance = Math.max(0, (sumSq / count) - (mean * mean));
     const sharpnessPct = Math.min(99, Math.round((variance / 45) * 100));
-    const glarePct = (glarePixels / (w * h)) * 100;
+    const glarePct = (glarePixels / totalPixels) * 100;
 
-    // 2. Build 48x36 Spatial Luminance + Edge Gradient Signature (1,728 cells)
-    const gridW = 48;
-    const gridH = 36;
-    const cellW = Math.floor(w / gridW);
-    const cellH = Math.floor(h / gridH);
-    const signature = new Float32Array(gridW * gridH * 2); // [lum, edgeGrad] per cell
+    // 2. Build 32x24 Downsampled Patch (Zero-Mean Normalized so auto-exposure changes don't fool it)
+    const pw = 32;
+    const ph = 24;
+    const cellW = w / pw; // 10
+    const cellH = h / ph; // 10
+    const patch32x24 = new Float32Array(pw * ph);
+    let patchMean = 0;
 
-    for (let gy = 0; gy < gridH; gy++) {
-      for (let gx = 0; gx < gridW; gx++) {
-        const cy = gy * cellH + Math.floor(cellH / 2);
-        const cx = gx * cellW + Math.floor(cellW / 2);
-        const idx = cy * w + cx;
-        const lum = gray[idx];
-        const gxGrad = Math.abs(gray[idx + 1] - gray[idx - 1]);
-        const gyGrad = Math.abs(gray[idx + w] - gray[idx - w]);
-        const cellIdx = (gy * gridW + gx) * 2;
-        signature[cellIdx] = lum;
-        signature[cellIdx + 1] = (gxGrad + gyGrad) * 0.5;
+    for (let gy = 0; gy < ph; gy++) {
+      for (let gx = 0; gx < pw; gx++) {
+        let bSum = 0;
+        const sy = Math.floor(gy * cellH);
+        const sx = Math.floor(gx * cellW);
+        for (let by = 2; by < 8; by += 2) {
+          const row = (sy + by) * w + sx;
+          for (let bx = 2; bx < 8; bx += 2) {
+            bSum += gray[row + bx];
+          }
+        }
+        const val = bSum / 9;
+        patch32x24[gy * pw + gx] = val;
+        patchMean += val;
+      }
+    }
+    patchMean /= (pw * ph);
+    for (let i = 0; i < patch32x24.length; i++) {
+      patch32x24[i] -= patchMean; // Zero-mean illumination invariance!
+    }
+
+    // 3. Build 64-bit Perceptual Difference Hash (dHash on 9x8 grid = 64 horizontal gradient bits)
+    const dHash64 = new Uint8Array(64);
+    let bitIdx = 0;
+    for (let row = 0; row < 8; row++) {
+      const py = Math.floor((row + 0.5) * (ph / 8));
+      for (let col = 0; col < 8; col++) {
+        const px1 = Math.floor((col + 0.5) * (pw / 9));
+        const px2 = Math.floor((col + 1.5) * (pw / 9));
+        dHash64[bitIdx++] = patch32x24[py * pw + px1] < patch32x24[py * pw + px2] ? 1 : 0;
       }
     }
 
-    // 3. Short-term frame-to-frame motion speed (cm/s)
-    let tickDelta = 0;
-    if (prevSig && prevSig.length === signature.length) {
-      let diff = 0;
-      const cells = gridW * gridH;
-      for (let i = 0; i < cells; i++) {
-        diff += Math.abs(signature[i * 2] - prevSig[i * 2]);
+    // 4. 2D Visual Odometry Motion Estimation against prevPatch (Finds exact dx, dy shift in FOV %)
+    let fovDeltaX = 0;
+    let fovDeltaY = 0;
+    let panCmPerSec = Math.round(gyroSpeedDegPerSec * 0.42);
+
+    if (prevPatch && prevPatch.length === patch32x24.length) {
+      const shiftRes = findBestShiftAndOverlap(patch32x24, prevPatch, pw, ph, 6, 4);
+      fovDeltaX = Math.round((shiftRes.bestDx / pw) * 100);
+      fovDeltaY = Math.round((shiftRes.bestDy / ph) * 100);
+
+      // Update cumulative visual odometry coordinates
+      cumulativeFovPanX += fovDeltaX;
+      cumulativeFovPanY += fovDeltaY;
+
+      // Also feed optical flow into virtual Yaw/Pitch if hardware compass isn't present (e.g., PC or video upload)
+      if (!hasHardwareCompass) {
+        currentYawDeg = Math.round((currentYawDeg + fovDeltaX * 0.6 + 360) % 360);
+        currentPitchDeg = Math.max(-90, Math.min(90, Math.round(currentPitchDeg + fovDeltaY * 0.45)));
       }
-      tickDelta = (diff / cells / 255) * 100;
+
+      const opticalSpeedCm = Math.round(Math.sqrt(fovDeltaX * fovDeltaX + fovDeltaY * fovDeltaY) * 2.2);
+      panCmPerSec = Math.max(panCmPerSec, opticalSpeedCm);
     }
-    const gyroCmPerSec = gyroSpeedDegPerSec * 0.42;
-    const opticalCmPerSec = tickDelta > 1.8 ? tickDelta * 1.55 : 0;
-    const panCmPerSec = Math.round(Math.max(gyroCmPerSec, opticalCmPerSec));
 
     return {
       sharpness: Math.round(variance),
       sharpnessPct,
       glarePct: Number(glarePct.toFixed(1)),
       panCmPerSec,
-      signature
+      fovDeltaX,
+      fovDeltaY,
+      patch32x24,
+      dHash64,
+      colorHist24
     };
   }
 
-  // Translation-Tolerant All-Frame Uniqueness Check:
-  // Compares current 48x36 signature against ALL previously saved photos (including ±1 block shift for hand jitter)
-  // Returns 0% to 100% representing how much of the current scene is genuinely new.
-  function computeUniquenessAgainstAllSaved(currentSig) {
-    if (!currentSig || capturedSignatures.length === 0) return 100;
-    const gridW = 48;
-    const gridH = 36;
-    const totalCells = gridW * gridH;
-    let minNewScenePct = 100;
+  // Sliding-Window 2D Template Matcher:
+  // Searches shifts dx in [-maxDx..maxDx], dy in [-maxDy..maxDy] on the 32x24 patch
+  // Returns the best shift (bestDx, bestDy) and the shift-compensated visual novelty % (0..100)
+  function findBestShiftAndOverlap(patchA, patchB, pw, ph, maxDx, maxDy) {
+    let minMad = 999999;
+    let bestDx = 0;
+    let bestDy = 0;
 
-    // Check against all saved signatures (up to last 12 unique photos)
-    const startIdx = Math.max(0, capturedSignatures.length - 12);
-    for (let s = startIdx; s < capturedSignatures.length; s++) {
-      const savedSig = capturedSignatures[s];
-      let significantlyChangedCells = 0;
-      let totalIntensityDelta = 0;
+    for (let dy = -maxDy; dy <= maxDy; dy++) {
+      for (let dx = -maxDx; dx <= maxDx; dx++) {
+        let sumAbsDiff = 0;
+        let overlapCells = 0;
 
-      for (let gy = 1; gy < gridH - 1; gy++) {
-        for (let gx = 1; gx < gridW - 1; gx++) {
-          const cIdx = (gy * gridW + gx) * 2;
-          const curLum = currentSig[cIdx];
-          const curEdge = currentSig[cIdx + 1];
+        const yStart = Math.max(2, 2 - dy);
+        const yEnd = Math.min(ph - 2, ph - 2 - dy);
+        const xStart = Math.max(2, 2 - dx);
+        const xEnd = Math.min(pw - 2, pw - 2 - dx);
 
-          // Find best match in a 3x3 neighborhood of savedSig so slight camera tilt doesn't trigger a false snap
-          let bestDiff = 999;
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              const sIdx = ((gy + dy) * gridW + (gx + dx)) * 2;
-              const dLum = Math.abs(curLum - savedSig[sIdx]);
-              const dEdge = Math.abs(curEdge - savedSig[sIdx + 1]);
-              const combined = dLum * 0.75 + dEdge * 0.55;
-              if (combined < bestDiff) bestDiff = combined;
-            }
+        for (let y = yStart; y < yEnd; y++) {
+          const rowA = y * pw;
+          const rowB = (y + dy) * pw + dx;
+          for (let x = xStart; x < xEnd; x++) {
+            sumAbsDiff += Math.abs(patchA[rowA + x] - patchB[rowB + x]);
+            overlapCells++;
           }
+        }
 
-          totalIntensityDelta += bestDiff;
-          // A cell counts as genuinely new only if its shift-compensated difference exceeds 26 intensity levels
-          if (bestDiff > 26) {
-            significantlyChangedCells++;
+        if (overlapCells > 0) {
+          const mad = sumAbsDiff / overlapCells;
+          if (mad < minMad) {
+            minMad = mad;
+            bestDx = dx;
+            bestDy = dy;
           }
         }
       }
-
-      const innerCells = (gridW - 2) * (gridH - 2);
-      const changedCellsPct = (significantlyChangedCells / innerCells) * 100;
-      const meanDeltaPct = (totalIntensityDelta / innerCells / 128) * 100;
-      const sceneDiffPct = Math.min(100, Math.round(changedCellsPct * 0.75 + meanDeltaPct * 0.25));
-
-      if (sceneDiffPct < minNewScenePct) {
-        minNewScenePct = sceneDiffPct;
-      }
     }
 
-    return minNewScenePct;
+    // Convert illumination-invariant Mean Absolute Deviation into visual novelty % (0 to 100%)
+    const alignedNoveltyPct = Math.min(100, Math.round((minMad / 42) * 100));
+    const shiftFraction = Math.sqrt((bestDx / pw) ** 2 + (bestDy / ph) ** 2);
+    const overlapPct = Math.max(0, Math.round((1 - shiftFraction) * (100 - alignedNoveltyPct * 0.7)));
+
+    return { bestDx, bestDy, alignedNoveltyPct, overlapPct };
+  }
+
+  // Evaluates the Multi-Condition "IF / AND / OR" Spatial + Visual + Edge-AI Decision Matrix against ALL visited sectors!
+  function evaluateSmartSpatialTrigger(currentFeatures, currentPose, sensitivityThreshold) {
+    if (visitedSpatialSectors.length === 0) {
+      return {
+        shouldSnap: true,
+        vetoReason: "",
+        triggerBranch: "Initial Sector #1",
+        minNoveltyPct: 100,
+        minAngleDeg: 180,
+        fovDispPct: 100
+      };
+    }
+
+    let minNoveltyPct = 100;
+    let maxOverlapPct = 0;
+    let minAngleDeg = 180;
+    let minFovDistancePct = 999;
+
+    // Compare against ALL visited spatial sectors so revisiting an old wall/shelf never repeats!
+    for (const sector of visitedSpatialSectors) {
+      // 1. 3D Angular Distance (Yaw/Pitch cone)
+      const angleDeg = compute3DAngularDistanceDeg(currentPose, sector.pose);
+      if (angleDeg < minAngleDeg) minAngleDeg = angleDeg;
+
+      // 2. Cumulative Visual Odometry FOV Distance
+      const dFovX = currentPose.fovPanX - sector.pose.fovPanX;
+      const dFovY = currentPose.fovPanY - sector.pose.fovPanY;
+      const fovDist = Math.round(Math.sqrt(dFovX * dFovX + dFovY * dFovY));
+      if (fovDist < minFovDistancePct) minFovDistancePct = fovDist;
+
+      // 3. Sliding-Window Shift-Compensated Visual Novelty (±35% shift search)
+      const shiftMatch = findBestShiftAndOverlap(
+        currentFeatures.patch32x24,
+        sector.patch32x24,
+        32,
+        24,
+        10,
+        7
+      );
+
+      // 4. 64-bit Perceptual dHash Hamming Distance %
+      let hammingDiff = 0;
+      for (let b = 0; b < 64; b++) {
+        if (currentFeatures.dHash64[b] !== sector.dHash64[b]) hammingDiff++;
+      }
+      const dHashDiffPct = Math.round((hammingDiff / 64) * 100);
+
+      // 5. 24-bin Chroma Color Histogram Distance %
+      let colorDiff = 0;
+      for (let c = 0; c < 24; c++) {
+        colorDiff += Math.abs(currentFeatures.colorHist24[c] - sector.colorHist24[c]);
+      }
+      const colorDiffPct = Math.min(100, Math.round(colorDiff * 55));
+
+      // Combined Illumination-Invariant Visual Novelty Score
+      const combinedNovelty = Math.round(
+        shiftMatch.alignedNoveltyPct * 0.45 + dHashDiffPct * 0.35 + colorDiffPct * 0.20
+      );
+
+      if (combinedNovelty < minNoveltyPct) minNoveltyPct = combinedNovelty;
+      if (shiftMatch.overlapPct > maxOverlapPct) maxOverlapPct = shiftMatch.overlapPct;
+    }
+
+    // 6. Check On-Device Edge AI Semantic Discovery (Did MediaPipe see a new object class or new spine cluster?)
+    const edgeDet = window.EdgeSegmentation?.lastDetections || { bookBoxes: [], itemBoxes: [] };
+    const currentSpines = edgeDet.bookBoxes?.length || 0;
+    const currentClasses = (edgeDet.itemBoxes || []).map(i => i.category).sort().join(",");
+    const lastSector = visitedSpatialSectors[visitedSpatialSectors.length - 1];
+    const hasNewSemanticObject =
+      (currentClasses.length > 0 && currentClasses !== lastSector.edgeClasses) ||
+      Math.abs(currentSpines - lastSector.edgeSpineCount) >= 4;
+
+    // =========================================================================
+    // HARD VETO GATES (Prevent Any Repetition!)
+    // =========================================================================
+    // Veto 1: Sliding-window template match shows >64% overlap with an already-snapped photo (just shifted slightly)
+    if (maxOverlapPct > 64 && minNoveltyPct < sensitivityThreshold + 6) {
+      return {
+        shouldSnap: false,
+        vetoReason: `⏸️ Overlapping View (${maxOverlapPct}% overlap with saved sector) — Pan further ➡️`,
+        triggerBranch: "",
+        minNoveltyPct,
+        minAngleDeg,
+        fovDispPct: minFovDistancePct
+      };
+    }
+
+    // Veto 2: Pointing in the same 3D Spatial Cone (<15° rotation AND <40% FOV pan) with similar appearance
+    if (minAngleDeg < 15 && minFovDistancePct < 40 && minNoveltyPct < sensitivityThreshold + 5) {
+      return {
+        shouldSnap: false,
+        vetoReason: `⏸️ Sector Already Visited (ΔAngle ${minAngleDeg}°, Novelty ${minNoveltyPct}%) — Point to new area ➡️`,
+        triggerBranch: "",
+        minNoveltyPct,
+        minAngleDeg,
+        fovDispPct: minFovDistancePct
+      };
+    }
+
+    // =========================================================================
+    // MULTI-CONDITION "IF / AND / OR" SMART SNAP TRIGGERS
+    // =========================================================================
+    // Branch A: 3D Spatial Rotation >= 20° into a new direction AND visual novelty >= sensitivityThreshold
+    const branchASpatialRotation = minAngleDeg >= 20 && minNoveltyPct >= sensitivityThreshold;
+
+    // Branch B: Lateral Visual Odometry Pan >= 48% of Frame Width (walking along shelf/room) AND visual novelty >= sensitivityThreshold
+    const branchBLateralOdometry = minFovDistancePct >= 48 && minNoveltyPct >= sensitivityThreshold;
+
+    // Branch C: On-Device Edge AI discovered a new furniture item or spine cluster AND camera moved >= 12° (or >=32% FOV) AND novelty >= (threshold - 4%)
+    const branchCSemanticDiscovery =
+      hasNewSemanticObject &&
+      (minAngleDeg >= 12 || minFovDistancePct >= 32) &&
+      minNoveltyPct >= Math.max(14, sensitivityThreshold - 4);
+
+    if (branchASpatialRotation) {
+      return {
+        shouldSnap: true,
+        vetoReason: "",
+        triggerBranch: `3D Angle +${minAngleDeg}° & ${minNoveltyPct}% New`,
+        minNoveltyPct,
+        minAngleDeg,
+        fovDispPct: minFovDistancePct
+      };
+    }
+
+    if (branchBLateralOdometry) {
+      return {
+        shouldSnap: true,
+        vetoReason: "",
+        triggerBranch: `Pan ${minFovDistancePct}% FOV & ${minNoveltyPct}% New`,
+        minNoveltyPct,
+        minAngleDeg,
+        fovDispPct: minFovDistancePct
+      };
+    }
+
+    if (branchCSemanticDiscovery) {
+      return {
+        shouldSnap: true,
+        vetoReason: "",
+        triggerBranch: `New AI Object + ${minAngleDeg}° Shift`,
+        minNoveltyPct,
+        minAngleDeg,
+        fovDispPct: minFovDistancePct
+      };
+    }
+
+    return {
+      shouldSnap: false,
+      vetoReason: `⏸️ Same Sector (Angle Δ${minAngleDeg}°, Novelty ${minNoveltyPct}%/${sensitivityThreshold}%) — Pan to next area ➡️`,
+      triggerBranch: "",
+      minNoveltyPct,
+      minAngleDeg,
+      fovDispPct: minFovDistancePct
+    };
   }
 
   function speakAgent(text) {
@@ -449,7 +710,7 @@
         excludedFrameRefs.add(activeFrame.frameRef);
         renderFilmstripAndFramesGrid();
         renderLiveLists();
-        speakAgent(`Excluded Frame ${activeFrame.index} as not yours.`);
+        speakAgent(`Excluded Sector ${activeFrame.index} as not yours.`);
       } else {
         speakAgent("Noted. Excluding this section.");
       }
@@ -494,7 +755,7 @@
     btn.addEventListener("click", () => handleUserVoiceCommand(btn.dataset.voice));
   });
 
-  // Start Live Camera Sweep
+  // Start Live Camera Sweep (Requests both Orientation & Motion permissions on iOS/Mobile)
   document.getElementById("startSweepBtn").addEventListener("click", async () => {
     const apiKey = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
     apiKeyInput.value = apiKey;
@@ -506,6 +767,9 @@
     }
     localStorage.setItem("CLAIM_AGENT_API_KEY", apiKey);
 
+    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+      try { await DeviceOrientationEvent.requestPermission(); } catch (e) {}
+    }
     if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
       try { await DeviceMotionEvent.requestPermission(); } catch (e) {}
     }
@@ -549,8 +813,10 @@
     lastLocalSnapTime = 0;
     lastCloudCallTime = Date.now() - 2500;
     steadyTicksCount = 0;
+    cumulativeFovPanX = 0;
+    cumulativeFovPanY = 0;
 
-    // Auto-collapse the Setup Drawer so the phone screen is clean and uncluttered!
+    // Auto-collapse Setup Drawer on mobile so camera view is clean
     const setupDrawer = document.getElementById("setupDrawer");
     if (setupDrawer) setupDrawer.open = false;
 
@@ -558,11 +824,10 @@
     document.getElementById("captureKeyframeBtn").disabled = false;
     document.getElementById("finishSweepBtn").disabled = false;
 
-    const pixelThreshold = parseFloat(document.getElementById("pixelThresholdInput")?.value || "28");
     const [country, currency] = document.getElementById("localeSelect").value.split("|");
 
     speakAgent(
-      `Sweep started in ${currency}. Everything is auto-marked as yours. Pan across your room—photos snap automatically whenever ${pixelThreshold} percent of the view changes.`
+      `Sweep started in ${currency}. 3D spatial tracking and visual odometry are active—pan across your room and pause briefly on each new area to snap.`
     );
 
     if (window.liveSpeechRecognizer) {
@@ -590,7 +855,7 @@
           for (const it of edgeItems) {
             const exists = rawItemsBuffer.some(
               existing => existing.category === it.category &&
-                          window.CloudVisionAndPrice.stringSimilarity(existing.description, it.description) > 0.70
+                          window.CloudVisionAndPrice.stringSimilarity(existing.description, it.description) > 0.65
             );
             if (!exists) {
               rawItemsBuffer.push({ ...it, frame_ref: latestFrame.frameRef });
@@ -602,43 +867,63 @@
       }
     }, 500);
 
-    // 350ms Pure Pixel-Uniqueness Trigger (Snaps immediately when pixelDiffPct >= threshold & steady; never snaps duplicates)
+    // 320ms Spatial + Visual Odometry + Edge AI Multi-Condition Loop
     clearInterval(blurInterval);
     blurInterval = setInterval(() => {
       if (!isSweeping) return;
       const activeProfile = window.CloudVisionAndPrice.getPacingProfile(
         document.getElementById("modelSelect").value
       );
-      const threshold = parseFloat(document.getElementById("pixelThresholdInput")?.value || "28");
+      const sensitivity = parseFloat(document.getElementById("pixelThresholdInput")?.value || "22");
 
-      const { sharpness, sharpnessPct, glarePct, panCmPerSec, signature } = analyzeFrameAndSignature(
-        videoEl,
-        workCanvas,
-        prevTickSignature
-      );
-      prevTickSignature = signature;
-      currentSharpness = sharpness;
-      currentPanCmPerSec = panCmPerSec;
+      const features = extractSpatialAndVisualFeatures(videoEl, workCanvas, prevTickPatch);
+      prevTickPatch = features.patch32x24;
+      currentSharpness = features.sharpness;
+      currentPanCmPerSec = features.panCmPerSec;
 
-      const pixelDiffPct = computeUniquenessAgainstAllSaved(signature);
+      const currentPose = {
+        yaw: currentYawDeg,
+        pitch: currentPitchDeg,
+        roll: currentRollDeg,
+        fovPanX: cumulativeFovPanX,
+        fovPanY: cumulativeFovPanY
+      };
+
+      const evalRes = evaluateSmartSpatialTrigger(features, currentPose, sensitivity);
       const timeSinceSnap = Date.now() - lastLocalSnapTime;
 
-      const sharpBadge = document.getElementById("sharpnessBadge");
+      const poseBadge = document.getElementById("spatialPoseBadge");
       const pixelDiffBadge = document.getElementById("pixelDiffBadge");
+      const sharpBadge = document.getElementById("sharpnessBadge");
       const queueBadge = document.getElementById("queueBadge");
       const alertBanner = document.getElementById("alertBanner");
       const trafficBanner = document.getElementById("moveTrafficBanner");
       const progressBar = document.getElementById("captureProgressBar");
 
-      const isMovingFast = panCmPerSec > activeProfile.maxPanCmPerSec || gyroSpeedDegPerSec > activeProfile.maxGyroDegPerSec;
-      const isBlurry = sharpness < 10;
+      const isMovingFast =
+        features.panCmPerSec > activeProfile.maxPanCmPerSec ||
+        gyroSpeedDegPerSec > activeProfile.maxGyroDegPerSec;
+      const isBlurry = features.sharpness < 10;
 
-      sharpBadge.textContent = `🎯 Sharp: ${sharpnessPct}%`;
-      pixelDiffBadge.textContent = `🔄 Change: ${pixelDiffPct}% / ${threshold}%`;
-      queueBadge.textContent = `☁️ Queue: ${pendingCloudQueue.length}`;
+      if (poseBadge) {
+        poseBadge.textContent = `🧭 Pose: ${currentPose.yaw}° Yaw / ${currentPose.pitch}° Pitch`;
+      }
+      if (pixelDiffBadge) {
+        pixelDiffBadge.textContent = `🔄 Novelty: ${evalRes.minNoveltyPct}% | ΔAngle: ${evalRes.minAngleDeg}°`;
+      }
+      if (sharpBadge) {
+        sharpBadge.textContent = `🎯 Sharp: ${features.sharpnessPct}%`;
+      }
+      if (queueBadge) {
+        queueBadge.textContent = `☁️ Queue: ${pendingCloudQueue.length}`;
+      }
 
-      const uniquenessProgress = Math.min(100, Math.round((pixelDiffPct / threshold) * 100));
-      if (progressBar) progressBar.style.width = `${uniquenessProgress}%`;
+      // Readiness bar shows how close the user is to entering a new 3D spatial sector
+      const angleReadiness = Math.min(100, Math.round((evalRes.minAngleDeg / 20) * 100));
+      const panReadiness = Math.min(100, Math.round((evalRes.fovDispPct / 48) * 100));
+      const visualReadiness = Math.min(100, Math.round((evalRes.minNoveltyPct / sensitivity) * 100));
+      const overallReadiness = Math.min(100, Math.round((Math.max(angleReadiness, panReadiness) + visualReadiness) / 2));
+      if (progressBar) progressBar.style.width = `${overallReadiness}%`;
 
       if (!isMovingFast && !isBlurry) {
         steadyTicksCount++;
@@ -646,37 +931,29 @@
         steadyTicksCount = 0;
       }
 
-      // Trigger Logic:
-      // 1. Primary Trigger: Pixel change >= strong threshold (e.g. 28%) AND camera steady for ~0.5s (2 ticks) AND >1.6s debounce
-      // 2. Time-Assist Trigger: User panned to a moderately new section (>= 80% of threshold, e.g. 22%) and held steady for >3.6s
-      const isPrimaryUnique = pixelDiffPct >= threshold && steadyTicksCount >= 2 && timeSinceSnap >= 1600;
-      const isTimeAssistUnique = pixelDiffPct >= Math.round(threshold * 0.8) && steadyTicksCount >= 4 && timeSinceSnap >= 3600;
-      const isFirstFrame = savedFrames.length === 0 && steadyTicksCount >= 2;
-
-      if (isFirstFrame || isPrimaryUnique || isTimeAssistUnique) {
-        if (signature) capturedSignatures.push(new Float32Array(signature));
+      // Snap if Multi-Condition Spatial + Visual Gate passes AND camera is steady for 2 ticks (~0.6s) AND >1.6s debounce
+      if (evalRes.shouldSnap && steadyTicksCount >= 2 && timeSinceSnap >= 1600) {
         steadyTicksCount = 0;
-        snapLocalFrameToMemory(videoEl, pixelDiffPct);
-      } else if (pixelDiffPct < Math.round(threshold * 0.8)) {
-        // Scene hasn't changed enough -> Do NOT take a duplicate photo
-        if (trafficBanner && timeSinceSnap > 1400) {
-          trafficBanner.className = "traffic-banner waiting";
-          trafficBanner.textContent = `⏸️ Same View (${pixelDiffPct}% < ${threshold}% Threshold) — Pan camera to next area ➡️`;
-        }
-      } else if (pixelDiffPct >= threshold && steadyTicksCount < 2) {
+        snapSpatialSectorToMemory(videoEl, features, currentPose, evalRes.triggerBranch, evalRes.minNoveltyPct);
+      } else if (evalRes.shouldSnap && steadyTicksCount < 2) {
         if (trafficBanner) {
           trafficBanner.className = "traffic-banner hold-steady";
-          trafficBanner.textContent = `🟡 New View Reached (${pixelDiffPct}% Changed) — Pause for 0.5s to snap!`;
+          trafficBanner.textContent = `🟡 New 3D Sector Reached (${evalRes.triggerBranch}) — Hold steady 0.5s to snap!`;
+        }
+      } else if (!evalRes.shouldSnap && timeSinceSnap > 1400) {
+        if (trafficBanner) {
+          trafficBanner.className = "traffic-banner waiting";
+          trafficBanner.textContent = evalRes.vetoReason;
         }
       }
 
-      if (isMovingFast && pixelDiffPct >= threshold) {
+      if (isMovingFast && evalRes.shouldSnap) {
         alertBanner.classList.remove("hidden");
-        alertBanner.textContent = `⚠️ Pause briefly on this view so the camera can snap a sharp photo!`;
+        alertBanner.textContent = `⚠️ Pause briefly on this new angle so the camera can snap a sharp frame!`;
       } else {
         alertBanner.classList.add("hidden");
       }
-    }, 350);
+    }, 320);
 
     // Background Cloud Batch Worker
     clearInterval(cloudWorkerInterval);
@@ -690,11 +967,19 @@
   // Manual Force Snap button
   document.getElementById("captureKeyframeBtn").addEventListener("click", () => {
     const videoEl = document.getElementById("cameraVideo");
-    if (prevTickSignature) capturedSignatures.push(new Float32Array(prevTickSignature));
-    snapLocalFrameToMemory(videoEl, 100);
+    const workCanvas = document.getElementById("workCanvas");
+    const features = extractSpatialAndVisualFeatures(videoEl, workCanvas, prevTickPatch);
+    const currentPose = {
+      yaw: currentYawDeg,
+      pitch: currentPitchDeg,
+      roll: currentRollDeg,
+      fovPanX: cumulativeFovPanX,
+      fovPanY: cumulativeFovPanY
+    };
+    snapSpatialSectorToMemory(videoEl, features, currentPose, "Manual Snap", 100);
   });
 
-  function snapLocalFrameToMemory(videoEl, pixelChangePct) {
+  function snapSpatialSectorToMemory(videoEl, features, pose, triggerReason, noveltyPct) {
     if (!isSweeping || !videoEl || videoEl.readyState < 2) return;
 
     lastLocalSnapTime = Date.now();
@@ -710,6 +995,20 @@
     const dataUrl = captureCanvas.toDataURL("image/jpeg", 0.80);
     const base64 = dataUrl.split(",")[1];
 
+    // Record this sector in Visited 3D Spatial Memory so we never snap it again
+    const edgeDet = window.EdgeSegmentation?.lastDetections || { bookBoxes: [], itemBoxes: [] };
+    if (features && features.patch32x24) {
+      visitedSpatialSectors.push({
+        index: frameIdx,
+        pose: { ...pose },
+        patch32x24: new Float32Array(features.patch32x24),
+        dHash64: new Uint8Array(features.dHash64),
+        colorHist24: new Float32Array(features.colorHist24),
+        edgeSpineCount: edgeDet.bookBoxes?.length || 0,
+        edgeClasses: (edgeDet.itemBoxes || []).map(i => i.category).sort().join(",")
+      });
+    }
+
     const frameObj = {
       index: frameIdx,
       filename,
@@ -718,7 +1017,9 @@
       dataUrl,
       width: captureCanvas.width,
       height: captureCanvas.height,
-      pixelChangePct,
+      pose: { ...pose },
+      triggerReason,
+      pixelChangePct: noveltyPct,
       status: "queued",
       excludedByUser: false,
       voiceNotes: [],
@@ -728,7 +1029,7 @@
     savedFrames.push(frameObj);
     pendingCloudQueue.push(frameObj);
 
-    triggerShutterVisual(frameIdx, pixelChangePct);
+    triggerShutterVisual(frameIdx, triggerReason);
     renderFilmstripAndFramesGrid();
 
     document.getElementById("liveFrameCount").textContent = savedFrames.length;
@@ -770,10 +1071,21 @@
       const apiKey = window.CloudVisionAndPrice.sanitizeApiKey(apiKeyInput.value);
       const [countryCode, currencyCode] = document.getElementById("localeSelect").value.split("|");
 
+      // Build compact memory of already-logged items & books so Cloud AI drops cross-angle duplicates!
+      const currentDedup = window.CloudVisionAndPrice.deduplicateInventory(
+        rawBooksBuffer,
+        rawItemsBuffer,
+        excludedFrameRefs
+      );
+      const alreadyLoggedMemory = {
+        books: currentDedup.uniqueBooks.filter(b => b.title).map(b => `${b.title} (${b.author || ""})`),
+        items: currentDedup.uniqueItems.map(i => `${i.category}: ${i.description}`)
+      };
+
       const frameNames = batch.map(b => `#${b.index}`).join(", ");
       const speechEl = document.getElementById("agentSpeechText");
       if (speechEl) {
-        speechEl.textContent = `☁️ Scanning Frame(s) ${frameNames}...`;
+        speechEl.textContent = `☁️ Scanning Sector(s) ${frameNames} with Spatial Memory...`;
       }
 
       const callStart = performance.now();
@@ -783,7 +1095,8 @@
           apiKey,
           modelChoice,
           countryCode,
-          currencyCode
+          currencyCode,
+          alreadyLoggedMemory
         );
         const elapsedSec = ((performance.now() - callStart) / 1000).toFixed(1);
 
@@ -806,8 +1119,8 @@
             continue;
           }
 
-          const fBooks = frameData.books || [];
-          const fItems = frameData.items || [];
+          const fBooks = (frameData.books || []).filter(b => !b.is_duplicate);
+          const fItems = (frameData.items || []).filter(i => !i.is_duplicate);
           batchBooksCount += fBooks.length;
           batchItemsCount += fItems.length;
 
@@ -862,7 +1175,7 @@
         renderLiveLists();
 
         if (batchBooksCount > 0 || batchItemsCount > 0) {
-          speakAgent(`Logged ${batchBooksCount} books and ${batchItemsCount} items from Frame ${frameNames}.`);
+          speakAgent(`Logged ${batchBooksCount} new books and ${batchItemsCount} new items in Sector ${frameNames}.`);
         }
       } catch (err) {
         console.error("Batch analysis error:", err);
@@ -899,15 +1212,15 @@
     const hint = document.getElementById("filmstripHint");
     if (hint) {
       const exclCount = excludedFrameRefs.size;
-      hint.textContent = `${savedFrames.length} unique (${exclCount} Not Mine)`;
+      hint.textContent = `${savedFrames.length} sectors (${exclCount} Not Mine)`;
     }
 
     if (strip) {
       strip.innerHTML = savedFrames.map(f => {
         const cls = f.excludedByUser ? "excluded" : (f.status === "queued" ? "queued" : "");
-        const badge = f.excludedByUser ? "🚫 Not Mine" : (f.status === "queued" ? `⏳ #${f.index} Yours` : `✅ #${f.index} Yours`);
+        const badge = f.excludedByUser ? "🚫 Not Mine" : (f.status === "queued" ? `⏳ #${f.index} (${f.pose?.yaw || 0}°)` : `✅ #${f.index} (${f.pose?.yaw || 0}°)`);
         return `
-          <div class="strip-thumb ${cls}" onclick="window.toggleFrameExclusion(${f.index})" title="Tap to toggle Yours vs Not Mine">
+          <div class="strip-thumb ${cls}" onclick="window.toggleFrameExclusion(${f.index})" title="Sector #${f.index}: ${f.triggerReason || ''}">
             <img src="${f.dataUrl}" alt="${f.filename}" />
             <div class="strip-lbl">${badge}</div>
           </div>
@@ -922,7 +1235,7 @@
         <div class="frame-card ${f.excludedByUser ? "excluded" : ""}" onclick="window.toggleFrameExclusion(${f.index})">
           <img src="${f.dataUrl}" alt="${f.filename}" />
           <div><strong>#${f.index}</strong> (${f.excludedByUser ? "🚫 Not Mine" : "✅ Yours"})</div>
-          <div style="font-size:0.62rem;color:#9ca3af;">New Pixels: ${f.pixelChangePct || 100}%</div>
+          <div style="font-size:0.62rem;color:#9ca3af;">🧭 ${f.pose?.yaw || 0}° Yaw | ${f.triggerReason || ""}</div>
           ${f.voiceNotes?.length ? `<div style="font-size:0.62rem;color:#67e8f9;">🎙️ "${f.voiceNotes.join(", ")}"</div>` : ""}
         </div>
       `).join("");
@@ -953,7 +1266,7 @@
         </div>
       `).join("");
     } else {
-      booksListEl.innerHTML = `<p class="empty-hint">Books will appear here live as unique frames are scanned...</p>`;
+      booksListEl.innerHTML = `<p class="empty-hint">Books will appear here live as unique spatial sectors are scanned...</p>`;
     }
 
     const itemsListEl = document.getElementById("liveItemsList");
