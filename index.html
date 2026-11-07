@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Library Contents Claim Agent</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- JSZip for packaging claim_packet.json + HTML report + evidence_frames/ -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+  <!-- TOP CONTROL & CONFIG BAR (Hidden when printing PDF report) -->
+  <header class="top-bar no-print">
+    <div class="brand">
+      <span class="badge-live" id="statusDot"></span>
+      <h1>Library Claim Agent</h1>
+    </div>
+
+    <div class="config-grid">
+      <div class="input-group">
+        <label for="apiKeyInput">API Key (Gemini <code>AIza..</code> or Groq <code>gsk_..</code>)</label>
+        <input type="password" id="apiKeyInput" placeholder="Paste single API key here..." autocomplete="off" />
+      </div>
+
+      <div class="input-group">
+        <label for="modelSelect">Vision Engine & Failover</label>
+        <select id="modelSelect">
+          <option value="auto-gemini">Auto-Failover: Gemini 2.5 Flash ➔ 2.0 Flash</option>
+          <option value="gemini-2.0-flash">Fast Mode: Gemini 2.0 Flash Only</option>
+          <option value="gemini-2.5-flash-lite">Ultra-Lite: Gemini 2.5 Flash-Lite</option>
+          <option value="groq-llama4">Alternative: Groq Llama-4-Scout Vision</option>
+        </select>
+      </div>
+
+      <div class="input-group">
+        <label for="localeSelect">Primary Country & Currency</label>
+        <select id="localeSelect">
+          <option value="IN|INR|₹">India (INR ₹)</option>
+          <option value="US|USD|$">United States (USD $)</option>
+          <option value="GB|GBP|£">United Kingdom (GBP £)</option>
+          <option value="CA|CAD|CA$">Canada (CAD $)</option>
+          <option value="DE|EUR|€">Germany (EUR €)</option>
+        </select>
+      </div>
+
+      <div class="input-group">
+        <label for="secondaryLocaleSelect">2nd Country (10-Book Proof)</label>
+        <select id="secondaryLocaleSelect">
+          <option value="US|USD|$">United States (USD $)</option>
+          <option value="IN|INR|₹">India (INR ₹)</option>
+          <option value="GB|GBP|£">United Kingdom (GBP £)</option>
+          <option value="CA|CAD|CA$">Canada (CAD $)</option>
+          <option value="DE|EUR|€">Germany (EUR €)</option>
+        </select>
+      </div>
+
+      <div class="input-group">
+        <label for="shelfRefCm">Ref Shelf Width (cm) / Ceiling (m)</label>
+        <div class="dual-num">
+          <input type="number" id="shelfRefCm" value="80" min="30" max="300" title="Standard shelf width in cm" />
+          <input type="number" id="ceilingRefM" value="2.44" step="0.05" min="2.0" max="5.0" title="Ceiling height in meters" />
+        </div>
+      </div>
+
+      <div class="input-group actions-right">
+        <button id="clearCacheBtn" class="btn-secondary btn-sm" title="Deletes downloaded WASM/TFLite models and browser storage">
+          🗑️ Clear Model & Cache
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN WORKSPACE -->
+  <main class="workspace no-print">
+    <!-- LEFT / TOP: CAMERA & ON-DEVICE SEGMENTATION VIEWPORT -->
+    <section class="viewport-card">
+      <div class="hud-bar">
+        <span id="sweepTimer">⏱️ 00:00</span>
+        <span id="sharpnessBadge" class="hud-pill">🎯 Sharpness: --</span>
+        <span id="motionBadge" class="hud-pill">📱 Motion: Steady</span>
+        <span id="modelBadge" class="hud-pill">🧠 Edge AI: Ready</span>
+      </div>
+
+      <div class="video-container">
+        <video id="cameraVideo" playsinline muted></video>
+        <canvas id="overlayCanvas"></canvas>
+        <div id="alertBanner" class="alert-banner hidden">⚠️ Slow down! Frame is blurry.</div>
+      </div>
+
+      <!-- VOICE BANNER -->
+      <div class="voice-panel">
+        <div class="voice-line">
+          <strong>🤖 Agent:</strong>
+          <span id="agentSpeechText">Paste your API key and tap "Start Live Camera Sweep" or upload a sweep video.</span>
+        </div>
+        <div class="voice-line user-line">
+          <strong>🎙️ You:</strong>
+          <span id="userSpeechText">Listening during sweep... (Say "skip shelf", "first edition", "it's a print")</span>
+        </div>
+        <!-- Quick voice-equivalent buttons in case mic is noisy -->
+        <div class="quick-voice-btns">
+          <button type="button" class="chip-btn" data-voice="That artwork is a print">🖼️ "Art is a Print"</button>
+          <button type="button" class="chip-btn" data-voice="That artwork is an original">🎨 "Art is Original"</button>
+          <button type="button" class="chip-btn" data-voice="That book is a signed first edition">⭐ "Signed 1st Edition"</button>
+          <button type="button" class="chip-btn" data-voice="Skip this shelf">⏭️ "Skip Shelf"</button>
+        </div>
+      </div>
+
+      <!-- MAIN ACTION CONTROLS -->
+      <div class="control-bar">
+        <button type="button" id="startSweepBtn" class="btn-primary">📹 Start Live Camera Sweep</button>
+        <label class="btn-secondary file-label">
+          📁 Upload Sweep Video
+          <input type="file" id="videoUploadInput" accept="video/*" hidden />
+        </label>
+        <button type="button" id="captureKeyframeBtn" class="btn-secondary" disabled>📸 Snap Shelf Now</button>
+        <button type="button" id="finishSweepBtn" class="btn-danger" disabled>⏹️ Finish & Price Packet</button>
+      </div>
+    </section>
+
+    <!-- RIGHT / BOTTOM: LIVE INVENTORY DRAWER -->
+    <section class="inventory-card">
+      <div class="kpi-strip">
+        <div class="kpi-box">
+          <span class="kpi-val" id="liveBookCount">0</span>
+          <span class="kpi-lbl">Books Logged</span>
+        </div>
+        <div class="kpi-box">
+          <span class="kpi-val" id="liveItemCount">0</span>
+          <span class="kpi-lbl">Non-Book Items</span>
+        </div>
+        <div class="kpi-box">
+          <span class="kpi-val" id="liveShelfRun">0.00m</span>
+          <span class="kpi-lbl">Shelf Run</span>
+        </div>
+        <div class="kpi-box">
+          <span class="kpi-val" id="liveFrameCount">0</span>
+          <span class="kpi-lbl">Frames Saved</span>
+        </div>
+      </div>
+
+      <div class="drawer-tabs">
+        <button type="button" class="tab-btn active" data-tab="booksTab">📚 Books (<span id="tabBookCount">0</span>)</button>
+        <button type="button" class="tab-btn" data-tab="itemsTab">🪑 Room Items (<span id="tabItemCount">0</span>)</button>
+        <button type="button" class="tab-btn" data-tab="framesTab">🖼️ Evidence Frames</button>
+      </div>
+
+      <div id="booksTab" class="tab-content active">
+        <div id="liveBooksList" class="live-list">
+          <p class="empty-hint">Books will appear here live as the camera sweeps across shelves...</p>
+        </div>
+      </div>
+
+      <div id="itemsTab" class="tab-content">
+        <div id="liveItemsList" class="live-list">
+          <p class="empty-hint">Shelving, furniture, lamps, electronics, and art will log here...</p>
+        </div>
+      </div>
+
+      <div id="framesTab" class="tab-content">
+        <div id="liveFramesGrid" class="frames-grid"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- POST-SWEEP FINAL CLAIM PACKET & PRINTABLE REPORT SECTION -->
+  <section id="reportSection" class="report-section hidden">
+    <div class="report-actions no-print">
+      <h2>✅ Claim Packet Ready</h2>
+      <div class="btn-group">
+        <button type="button" id="downloadZipBtn" class="btn-primary">📦 Download Full Claim Packet (.ZIP)</button>
+        <button type="button" id="downloadJsonBtn" class="btn-secondary">📄 Download claim_packet.json</button>
+        <button type="button" id="printReportBtn" class="btn-secondary">🖨️ Print / Save PDF Report</button>
+      </div>
+    </div>
+    <div id="printableReportContainer" class="printable-report"></div>
+  </section>
+
+  <!-- Offscreen reusable canvases to prevent mobile GPU memory leaks -->
+  <canvas id="workCanvas" width="320" height="240" class="hidden"></canvas>
+  <canvas id="captureCanvas" width="1280" height="720" class="hidden"></canvas>
+
+  <!-- Scripts -->
+  <script type="module" src="edge_segmentation.js"></script>
+  <script src="cloud_vision_and_price.js"></script>
+  <script src="packet_generator.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
