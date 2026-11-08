@@ -7,10 +7,8 @@
 Because all AI and packaging libraries (`@mediapipe/tasks-vision` and `JSZip`) load directly inside the browser over HTTPS CDNs, there are **zero packages to install** (`no npm install`, `no pip install`, and zero build steps).
 
 
-# Working video link:
-```bash
-https://drive.google.com/file/d/12XEFLJRM0pa8deGDP3e1K2ouXWWsHvUu/view
-```
+# Working video link: 
+* https://drive.google.com/file/d/12XEFLJRM0pa8deGDP3e1K2ouXWWsHvUu/view
 
 # How to use the app:
 1. Go to policyclaimagent.vercel.app
