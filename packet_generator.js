@@ -22,12 +22,12 @@ window.PacketGenerator = {
 
       if (b.status === "identified") {
         booksIdentified++;
-        if (rep.amount > 0) {
+        if (rep.amount > 0 && rep.url) {
           booksRepCost += rep.amount;
           booksUsedVal += used.amount;
         } else {
           excludedCount++;
-          reviewQueue.push({ ref_id: id, reason: `No verifiable local price found for "${b.title}" (${b.frame_ref})` });
+          reviewQueue.push({ ref_id: id, reason: `No verifiable catalog record found for "${b.title}" (${b.frame_ref})` });
         }
       } else if (b.status === "needs_appraisal") {
         booksIdentified++;
@@ -80,12 +80,12 @@ window.PacketGenerator = {
           ref_id: id,
           reason: `Artwork/portrait (${item.description}) requires human appraisal (${item.frame_ref})`
         });
-      } else if (rep.low > 0 || rep.high > 0) {
+      } else if ((rep.low > 0 || rep.high > 0) && rep.url) {
         itemsLow += rep.low;
         itemsHigh += rep.high;
       } else {
         excludedCount++;
-        reviewQueue.push({ ref_id: id, reason: `Missing price source for ${item.description}` });
+        reviewQueue.push({ ref_id: id, reason: `Missing dedicated catalog source for ${item.description}` });
       }
 
       return {
@@ -107,7 +107,7 @@ window.PacketGenerator = {
     const heightM = Number((roomEst.height_m || 2.44).toFixed(2));
     const floorM2 = Number((lengthM * widthM).toFixed(2));
     const wallM2 = Number((2 * (lengthM + widthM) * heightM).toFixed(2));
-    if (shelvedAreaM2 === 0) shelvedAreaM2 = 2.88; // Minimum 2 standard shelving units
+    if (shelvedAreaM2 === 0) shelvedAreaM2 = 2.88;
 
     const packet = {
       sweep: {
@@ -161,20 +161,28 @@ window.PacketGenerator = {
     const r = packet.room;
     const t = packet.totals;
 
-    const bookRows = packet.books.map(b => `
-      <tr>
-        <td>${b.id}</td>
-        <td>${b.shelf} (#${b.position})</td>
-        <td><code>${b.frame_ref}</code></td>
-        <td><strong>${b.status}</strong></td>
-        <td>${b.title || "<em>[Unidentified Spine]</em>"}</td>
-        <td>${b.author || "-"}</td>
-        <td>${b.spine_height_cm} × ${b.spine_thickness_cm} cm</td>
-        <td>${b.replacement_cost.amount ? `${cur} ${b.replacement_cost.amount} ${b.replacement_cost.converted ? "(Conv)" : ""}` : "-"}</td>
-        <td>${b.used_value.amount ? `${cur} ${b.used_value.amount} (${b.used_value.condition_assumed})` : "-"}</td>
-        <td>${b.replacement_cost.url ? `<a href="${b.replacement_cost.url}" target="_blank" rel="noopener">Source Link</a>` : "-"}</td>
-      </tr>
-    `).join("");
+    const bookRows = packet.books.map(b => {
+      const newLink = b.replacement_cost.url
+        ? `<a href="${b.replacement_cost.url}" target="_blank" rel="noopener">Google Books Page</a>`
+        : "-";
+      const usedLink = b.used_value.url
+        ? `<a href="${b.used_value.url}" target="_blank" rel="noopener">OpenLibrary Page</a>`
+        : "";
+      return `
+        <tr>
+          <td>${b.id}</td>
+          <td>${b.shelf} (#${b.position})</td>
+          <td><code>${b.frame_ref}</code></td>
+          <td><strong>${b.status}</strong></td>
+          <td>${b.title || "<em>[Unidentified Spine]</em>"}</td>
+          <td>${b.author || "-"}</td>
+          <td>${b.spine_height_cm} × ${b.spine_thickness_cm} cm</td>
+          <td>${b.replacement_cost.amount ? `${cur} ${b.replacement_cost.amount} ${b.replacement_cost.converted ? "(Conv)" : ""}` : "-"}</td>
+          <td>${b.used_value.amount ? `${cur} ${b.used_value.amount} (${b.used_value.condition_assumed})` : "-"}</td>
+          <td>${newLink}${usedLink && usedLink !== newLink ? ` | ${usedLink}` : ""}</td>
+        </tr>
+      `;
+    }).join("");
 
     const secRows = (packet.secondary_locale_proof_10_books || []).map((s, i) => `
       <tr>
@@ -183,7 +191,7 @@ window.PacketGenerator = {
         <td>${s.primary_currency} ${s.primary_new}</td>
         <td>${s.secondary_currency} ${s.secondary_new}</td>
         <td>${s.secondary_currency} ${s.secondary_used}</td>
-        <td>${s.source_url ? `<a href="${s.source_url}" target="_blank" rel="noopener">Verify</a>` : "-"}</td>
+        <td>${s.source_url ? `<a href="${s.source_url}" target="_blank" rel="noopener">Catalog Volume Page</a>` : "-"}</td>
       </tr>
     `).join("");
 
@@ -196,7 +204,7 @@ window.PacketGenerator = {
         <td><strong>${it.status}</strong></td>
         <td>${it.status === "needs_appraisal" ? "Needs Appraisal" : `${cur} ${it.replacement_cost.low} – ${it.replacement_cost.high}`}</td>
         <td><code>${it.frame_ref}</code></td>
-        <td>${it.replacement_cost.url ? `<a href="${it.replacement_cost.url}" target="_blank" rel="noopener">Source</a>` : "-"}</td>
+        <td>${it.replacement_cost.url ? `<a href="${it.replacement_cost.url}" target="_blank" rel="noopener">${it.replacement_cost.source || "Retailer Page"}</a>` : "-"}</td>
       </tr>
     `).join("");
 
@@ -241,7 +249,7 @@ window.PacketGenerator = {
         <h3>3. Itemized Book Inventory (${packet.books.length} Spines)</h3>
         <table>
           <thead>
-            <tr><th>ID</th><th>Shelf</th><th>Frame</th><th>Status</th><th>Title</th><th>Author</th><th>Spine (H×T)</th><th>New Cost</th><th>Used Value</th><th>Source</th></tr>
+            <tr><th>ID</th><th>Shelf</th><th>Frame</th><th>Status</th><th>Title</th><th>Author</th><th>Spine (H×T)</th><th>New Cost</th><th>Used Value</th><th>Dedicated Catalog Pages</th></tr>
           </thead>
           <tbody>${bookRows || "<tr><td colspan='10'>No books logged</td></tr>"}</tbody>
         </table>
@@ -249,7 +257,7 @@ window.PacketGenerator = {
         <h3>4. Multi-Country Valuation Proof (Same 10 Books in 2nd Locale)</h3>
         <table>
           <thead>
-            <tr><th>#</th><th>Title</th><th>Primary New</th><th>2nd Country New</th><th>2nd Country Used</th><th>Source</th></tr>
+            <tr><th>#</th><th>Title</th><th>Primary New</th><th>2nd Country New</th><th>2nd Country Used</th><th>Dedicated Catalog Page</th></tr>
           </thead>
           <tbody>${secRows || "<tr><td colspan='6'>No identified books for secondary comparison</td></tr>"}</tbody>
         </table>
@@ -257,7 +265,7 @@ window.PacketGenerator = {
         <h3>5. Non-Book Room Contents (${packet.items.length} Items)</h3>
         <table>
           <thead>
-            <tr><th>ID</th><th>Category</th><th>Description</th><th>Dimensions</th><th>Status</th><th>Replacement Range</th><th>Frame</th><th>Source</th></tr>
+            <tr><th>ID</th><th>Category</th><th>Description</th><th>Dimensions</th><th>Status</th><th>Replacement Range</th><th>Frame</th><th>Dedicated Retailer Page</th></tr>
           </thead>
           <tbody>${itemRows || "<tr><td colspan='8'>No non-book items logged</td></tr>"}</tbody>
         </table>

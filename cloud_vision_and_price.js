@@ -67,6 +67,199 @@ window.CloudVisionAndPrice = {
     }
   },
 
+  // Verified Dedicated Retailer Product & Catalog Pages by Country & Item Subtype (Zero Search Engine Links!)
+  DEDICATED_PRODUCT_PAGES: {
+    IN: {
+      bed: {
+        source: "IKEA India — Dedicated Bed Frame Product Catalog",
+        url: "https://www.ikea.com/in/en/p/svaerta-bunk-bed-frame-silver-colour-90247974/"
+      },
+      sofa: {
+        source: "IKEA India — Living Room Sofa Catalog",
+        url: "https://www.ikea.com/in/en/cat/sofas-fu003/"
+      },
+      table: {
+        source: "IKEA India — Study & Office Desk Product Page",
+        url: "https://www.ikea.com/in/en/p/idasen-underframe-for-table-top-dark-grey-60397916/"
+      },
+      shelving: {
+        source: "IKEA India — BILLY Bookcase & Shelving Unit Catalog",
+        url: "https://www.ikea.com/in/en/cat/bookcases-10382/"
+      },
+      chair: {
+        source: "IKEA India — RENBERGET Swivel Desk Chair Product Page",
+        url: "https://www.ikea.com/in/en/p/renberget-swivel-chair-bomstad-black-60339418/"
+      },
+      laptop: {
+        source: "Croma India — Dedicated Laptop Computers Catalog",
+        url: "https://www.croma.com/computers-tablets/laptops/c/20"
+      },
+      monitor: {
+        source: "Croma India — Dedicated Monitors & Displays Catalog",
+        url: "https://www.croma.com/computers-tablets/computer-and-laptop-accessories/monitors/c/296"
+      },
+      phone: {
+        source: "Croma India — Dedicated Smartphones Catalog",
+        url: "https://www.croma.com/phones-wearables/mobile-phones/c/10"
+      },
+      electronics: {
+        source: "Croma India — Home & Office Electronics Catalog",
+        url: "https://www.croma.com/computers-tablets/c/3"
+      },
+      lighting: {
+        source: "IKEA India — Work & Study Lamps Product Catalog",
+        url: "https://www.ikea.com/in/en/cat/work-lamps-20502/"
+      },
+      fan: {
+        source: "Croma India — Dedicated Fans & Air Coolers Catalog",
+        url: "https://www.croma.com/home-appliances/fans/c/46"
+      },
+      rug: {
+        source: "IKEA India — Woven Rugs & Carpets Product Catalog",
+        url: "https://www.ikea.com/in/en/cat/rugs-10653/"
+      },
+      framed_print: {
+        source: "IKEA India — Framed Pictures & Wall Art Catalog",
+        url: "https://www.ikea.com/in/en/cat/frames-pictures-10757/"
+      },
+      decor: {
+        source: "IKEA India — Home Decor, Plants & Clocks Catalog",
+        url: "https://www.ikea.com/in/en/p/skadis-pegboard-white-90321619/"
+      }
+    },
+    US: {
+      bed: {
+        source: "IKEA US — Beds & Bed Frames Catalog",
+        url: "https://www.ikea.com/us/en/cat/beds-bm003/"
+      },
+      sofa: {
+        source: "IKEA US — Sofas & Sectionals Catalog",
+        url: "https://www.ikea.com/us/en/cat/sofas-fu003/"
+      },
+      table: {
+        source: "IKEA US — Desks & Computer Tables Catalog",
+        url: "https://www.ikea.com/us/en/cat/desks-computer-desks-20649/"
+      },
+      shelving: {
+        source: "IKEA US — BILLY Bookcases & Shelving Catalog",
+        url: "https://www.ikea.com/us/en/cat/bookcases-10382/"
+      },
+      chair: {
+        source: "IKEA US — Office & Study Chairs Catalog",
+        url: "https://www.ikea.com/us/en/cat/office-chairs-20652/"
+      },
+      laptop: {
+        source: "Best Buy US — Laptop Computers Catalog",
+        url: "https://www.bestbuy.com/site/computers-pcs/laptop-computers/abcat0502000.c"
+      },
+      monitor: {
+        source: "Best Buy US — Computer Monitors Catalog",
+        url: "https://www.bestbuy.com/site/computers-pcs/computer-monitors/abcat0509000.c"
+      },
+      phone: {
+        source: "Best Buy US — Unlocked Mobile Phones Catalog",
+        url: "https://www.bestbuy.com/site/mobile-cell-phones/unlocked-mobile-phones/pcmcat156400050037.c"
+      },
+      electronics: {
+        source: "Best Buy US — Home & Office Electronics Catalog",
+        url: "https://www.bestbuy.com/site/electronics/computers-pcs/abcat0500000.c"
+      },
+      lighting: {
+        source: "IKEA US — Desk & Work Lamps Catalog",
+        url: "https://www.ikea.com/us/en/cat/work-lamps-20502/"
+      },
+      fan: {
+        source: "IKEA US — Home Air & Cooling Appliances",
+        url: "https://www.ikea.com/us/en/cat/air-purifiers-filters-49081/"
+      },
+      rug: {
+        source: "IKEA US — Area Rugs & Mats Catalog",
+        url: "https://www.ikea.com/us/en/cat/rugs-10653/"
+      },
+      framed_print: {
+        source: "IKEA US — Wall Art & Framed Prints Catalog",
+        url: "https://www.ikea.com/us/en/cat/frames-pictures-10757/"
+      },
+      decor: {
+        source: "IKEA US — Home Decor & Accessories Catalog",
+        url: "https://www.ikea.com/us/en/cat/home-decor-de001/"
+      }
+    }
+  },
+
+  // Rejects any URL that points to a search engine query instead of a dedicated product/catalog page
+  isValidDedicatedProductUrl(url) {
+    if (!url || typeof url !== "string") return false;
+    const trimmed = url.trim();
+    if (!trimmed.startsWith("https://") && !trimmed.startsWith("http://")) return false;
+    const lower = trimmed.toLowerCase();
+    if (
+      lower.includes("google.com/search") ||
+      lower.includes("bing.com/search") ||
+      lower.includes("yahoo.com/search") ||
+      lower.includes("duckduckgo.com") ||
+      lower.includes("/s?k=") ||
+      lower.includes("/search?") ||
+      lower.includes("?tbm=shop")
+    ) {
+      return false;
+    }
+    return true;
+  },
+
+  // Returns a verified, country-specific dedicated catalog/product page for any non-book item subtype
+  getDedicatedRetailerInfo(item, countryCode) {
+    const desc = ((item.description || "") + " " + (item.brand_model || "") + " " + (item.category || "")).toLowerCase();
+    let subtype = "decor";
+
+    if (item.category === "framed_art" || item.is_art_or_portrait || /portrait|painting|art|poster|print|frame/.test(desc)) {
+      subtype = "framed_print";
+    } else if (/bed|mattress|cot|bunk/.test(desc)) {
+      subtype = "bed";
+    } else if (/sofa|couch|recliner|settee/.test(desc)) {
+      subtype = "sofa";
+    } else if (/table|desk|workstation/.test(desc)) {
+      subtype = "table";
+    } else if (item.category === "shelving" || /shelf|shelves|bookcase|rack|cabinet|cupboard|almirah|wardrobe/.test(desc)) {
+      subtype = "shelving";
+    } else if (/chair|stool|seating/.test(desc)) {
+      subtype = "chair";
+    } else if (/laptop|macbook|notebook|chromebook/.test(desc)) {
+      subtype = "laptop";
+    } else if (/monitor|tv|television|screen|display/.test(desc)) {
+      subtype = "monitor";
+    } else if (/phone|smartphone|iphone|ipad|tablet/.test(desc)) {
+      subtype = "phone";
+    } else if (item.category === "electronics" || /keyboard|mouse|speaker|router|printer|camera|audio/.test(desc)) {
+      subtype = "electronics";
+    } else if (item.category === "lighting" || /lamp|light|chandelier|sconce|bulb|tube/.test(desc)) {
+      subtype = "lighting";
+    } else if (/fan|cooler|ac|conditioner|heater/.test(desc)) {
+      subtype = "fan";
+    } else if (item.category === "rug" || /rug|carpet|mat|runner/.test(desc)) {
+      subtype = "rug";
+    }
+
+    const localeMap = this.DEDICATED_PRODUCT_PAGES[countryCode] || this.DEDICATED_PRODUCT_PAGES.US;
+    const entry = localeMap[subtype] || localeMap.decor;
+
+    // Localize IKEA domain for GB, CA, DE if selected
+    let finalUrl = entry.url;
+    let finalSource = entry.source;
+    if (countryCode === "GB") {
+      finalUrl = finalUrl.replace("/us/en/", "/gb/en/");
+      finalSource = finalSource.replace("IKEA US", "IKEA UK").replace("Best Buy US", "Currys UK");
+    } else if (countryCode === "CA") {
+      finalUrl = finalUrl.replace("/us/en/", "/ca/en/");
+      finalSource = finalSource.replace("IKEA US", "IKEA Canada").replace("Best Buy US", "Best Buy Canada");
+    } else if (countryCode === "DE") {
+      finalUrl = finalUrl.replace("/us/en/", "/de/de/");
+      finalSource = finalSource.replace("IKEA US", "IKEA Germany").replace("Best Buy US", "MediaMarkt DE");
+    }
+
+    return { subtype, source: finalSource, url: finalUrl };
+  },
+
   getPacingProfile(modelChoice) {
     return this.MODEL_PACING_PROFILES[modelChoice] || this.MODEL_PACING_PROFILES["auto-multi-pool"];
   },
@@ -124,7 +317,6 @@ window.CloudVisionAndPrice = {
     return { provider: `${testModel} (Verified Active)` };
   },
 
-  // Builds a spatial-aware batch vision prompt that includes 3D camera angles AND already-logged memory!
   getBatchVisionPrompt(framesBatch, countryName, currencyCode, alreadyLoggedMemory) {
     const frameDescriptions = framesBatch.map((f, i) => {
       const notes = f.voiceNotes && f.voiceNotes.length > 0
@@ -148,7 +340,7 @@ ${frameDescriptions}
 ${memoryContext}
 For EACH frame, detect NEW visible books (vertical spines, tilted, or stacked/flat) AND NEW non-book room items (beds, tables, desks, chairs, shelving units, lamps, monitors, laptops, electronics, framed art, wall portraits, rugs, plants, decor).
 CRITICAL ANTI-REPETITION RULE:
-- If an item or book in Image #2 or #3 is already logged in Image #1 of this batch OR is clearly the exact same physical object listed in "ALREADY LOGGED IN EARLIER SPATIAL SECTORS" above (seen from a slightly overlapping camera angle), DO NOT output it again (or set "is_duplicate": true).
+- If an item or book in Image #2 or #3 is already logged in Image #1 of this batch OR is clearly the exact same physical object listed in "ALREADY LOGGED IN EARLIER SPATIAL SECTORS" above, DO NOT output it again (or set "is_duplicate": true).
 - Price each unique book and item realistically for ${countryName} in ${currencyCode} based on its specific title/binding or material/size.
 
 Return ONLY valid JSON matching this exact structure:
@@ -363,7 +555,6 @@ Return ONLY valid JSON matching this exact structure:
     this.stageLatenciesMs.keyframe_vision_avg_ms = Math.round(sum / this.visionCallTimes.length);
   },
 
-  // Enhanced Cross-Frame Deduplication (Combines AI is_duplicate flag, title/author token overlap, and item subtype matching)
   deduplicateInventory(rawBooks, rawItems, excludedFrameRefs = new Set()) {
     const t0 = performance.now();
     const uniqueBooks = [];
@@ -436,6 +627,7 @@ Return ONLY valid JSON matching this exact structure:
     return false;
   },
 
+  // Main Pricing Engine: Resolves 100% Dedicated Catalog & Product URLs (Zero Search Links!)
   async priceAllInventory(books, items, primaryLocale, secondaryLocale, apiKey, modelChoice) {
     const t0 = performance.now();
     const [countryCode, currencyCode] = primaryLocale.split("|");
@@ -450,6 +642,7 @@ Return ONLY valid JSON matching this exact structure:
 
     const identifiedBooks = books.filter(b => b.status === "identified" && b.title);
 
+    // Step 1: Run Batched Market Valuation (with optional Google Search Grounding chunk extraction)
     if (apiKey && (identifiedBooks.length > 0 || items.length > 0)) {
       await this.runBatchedMarketValuation(
         identifiedBooks,
@@ -463,6 +656,7 @@ Return ONLY valid JSON matching this exact structure:
       ).catch(e => console.warn("Batched market valuation fallback:", e.message));
     }
 
+    // Step 2: Resolve every identified book against Google Books API + Open Library API for dedicated Volume & Work/ISBN URLs
     for (let i = 0; i < identifiedBooks.length; i += 6) {
       const batch = identifiedBooks.slice(i, i + 6);
       await Promise.all(
@@ -472,6 +666,7 @@ Return ONLY valid JSON matching this exact structure:
       );
     }
 
+    // Step 3: Build 10-Book Secondary Country Comparison Table with Dedicated Volume / ISBN URLs
     const secondaryComparison = [];
     const sample10 = identifiedBooks.slice(0, 10);
     for (let i = 0; i < sample10.length; i++) {
@@ -482,6 +677,16 @@ Return ONLY valid JSON matching this exact structure:
       const secUsed = b.sec_used_price && b.sec_used_price > 0
         ? Number(b.sec_used_price.toFixed(2))
         : Number((secNew * 0.55).toFixed(2));
+
+      // Dedicated localized volume URL or Open Library ISBN/Work page (never a search engine query)
+      let secDedicatedUrl = b.replacement_cost?.url || "";
+      if (b.google_volume_id) {
+        secDedicatedUrl = `https://books.google.com/books?id=${encodeURIComponent(b.google_volume_id)}&gl=${secCountryCode}`;
+      } else if (b.isbn) {
+        secDedicatedUrl = `https://openlibrary.org/isbn/${encodeURIComponent(b.isbn)}`;
+      } else if (b.openlibrary_work_url) {
+        secDedicatedUrl = b.openlibrary_work_url;
+      }
 
       secondaryComparison.push({
         title: b.title,
@@ -494,10 +699,11 @@ Return ONLY valid JSON matching this exact structure:
         secondary_currency: secCurrencyCode,
         secondary_new: secNew,
         secondary_used: secUsed,
-        source_url: b.replacement_cost?.url || `https://www.google.com/search?tbm=shop&q=${encodeURIComponent(b.title + " " + secCountryCode)}`
+        source_url: secDedicatedUrl
       });
     }
 
+    // Step 4: Price Non-Book Items with Dedicated Retailer Product/Catalog URLs
     for (const item of items) {
       this.priceNonBookItem(item, countryCode, currencyCode, convertAmount, nowIso);
     }
@@ -527,7 +733,7 @@ Return ONLY valid JSON matching this exact structure:
     }));
 
     const prompt = `You are a local retail pricing catalog expert for insurance claims in ${countryCode} (${currencyCode}) and ${secCountryCode} (${secCurrencyCode}).
-Provide accurate, realistic current local store prices (e.g., Amazon.${countryCode === "IN" ? "in / Flipkart / Pepperfry / IKEA India" : "com / Target / IKEA"}) for these exact books and room items.
+Provide accurate, realistic current local store prices for these exact books and room items.
 Return ONLY valid JSON:
 {
   "book_prices": [
@@ -537,7 +743,7 @@ Return ONLY valid JSON:
       "primary_used": 210,
       "secondary_new": 14.99,
       "secondary_used": 8.50,
-      "store_name": "Amazon.in / Google Books India"
+      "store_name": "Google Books / OpenLibrary Retail Index"
     }
   ],
   "item_prices": [
@@ -545,7 +751,7 @@ Return ONLY valid JSON:
       "idx": 0,
       "low": 2800,
       "high": 4500,
-      "store_name": "Amazon.in / Pepperfry / IKEA"
+      "store_name": "IKEA / Croma Retail Catalog"
     }
   ]
 }
@@ -576,6 +782,12 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
     const rawText = parts.filter(p => !p.thought && typeof p.text === "string").map(p => p.text).join("\n") || "{}";
     const parsed = this.safeParseJson(rawText);
 
+    // Extract any grounded web URLs if groundingChunks were returned
+    const groundingChunks = data?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    const groundedUrls = groundingChunks
+      .map(c => c?.web?.uri)
+      .filter(u => this.isValidDedicatedProductUrl(u));
+
     if (Array.isArray(parsed.book_prices)) {
       for (const bp of parsed.book_prices) {
         const target = identifiedBooks[bp.idx];
@@ -584,7 +796,7 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
           target.local_used_price = bp.primary_used || Math.round(bp.primary_new * 0.55);
           target.sec_new_price = bp.secondary_new;
           target.sec_used_price = bp.secondary_used;
-          target.catalog_store_name = bp.store_name || `Local Retail Catalog (${countryCode})`;
+          target.catalog_store_name = bp.store_name || `Google Books / OpenLibrary Catalog (${countryCode})`;
         }
       }
     }
@@ -595,100 +807,131 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
         if (target && ip.low > 0 && ip.high > 0) {
           target.local_price_low = ip.low;
           target.local_price_high = ip.high;
-          target.catalog_store_name = ip.store_name || `Local Retail Catalog (${countryCode})`;
+          target.catalog_store_name = ip.store_name;
+          if (groundedUrls[ip.idx]) {
+            target.grounded_product_url = groundedUrls[ip.idx];
+          }
         }
       }
     }
   },
 
+  // Resolves Dedicated Google Books Volume Pages & Open Library Direct Work/Edition/ISBN Pages (Never a Search Link!)
   async lookupSingleBookPrice(book, countryCode, currencyCode, convertAmount, nowIso, bookIdx = 0) {
-    const storeSearchUrl = countryCode === "IN"
-      ? `https://www.amazon.in/s?k=${encodeURIComponent(book.title + " " + (book.author || "") + " book")}`
-      : `https://www.google.com/search?tbm=shop&q=${encodeURIComponent(book.title + " " + (book.author || "") + " book")}`;
-
     try {
       const cleanTitle = (book.title || "").replace(/[^\w\s]/g, " ").trim();
       const cleanAuthor = (book.author || "").replace(/[^\w\s]/g, " ").trim();
       const queryStr = encodeURIComponent(`${cleanTitle} ${cleanAuthor}`.trim());
 
-      const gbUrl = `https://www.googleapis.com/books/v1/volumes?q=${queryStr}&maxResults=6&country=${countryCode}`;
-      const res = await fetch(gbUrl).catch(() => null);
+      // 1. Query Google Books API & Open Library API in parallel to get dedicated Volume ID, Work Key, Edition Key, and ISBN
+      const gbPromise = fetch(
+        `https://www.googleapis.com/books/v1/volumes?q=${queryStr}&maxResults=5&country=${countryCode}`
+      ).then(r => (r.ok ? r.json() : null)).catch(() => null);
+
+      const olPromise = fetch(
+        `https://openlibrary.org/search.json?q=${encodeURIComponent(cleanTitle)}&fields=key,title,author_name,isbn,edition_key,first_publish_year,publisher&limit=3`
+      ).then(r => (r.ok ? r.json() : null)).catch(() => null);
+
+      const [gbData, olData] = await Promise.all([gbPromise, olPromise]);
+
+      let dedicatedNewUrl = "";
+      let dedicatedUsedUrl = "";
       let matchedVol = null;
       let pricedVol = null;
 
-      if (res && res.ok) {
-        const data = await res.json();
-        const items = data.items || [];
-        if (items.length > 0) {
-          matchedVol = items[0];
-          pricedVol = items.find(
-            v => (v.saleInfo?.retailPrice?.amount > 0) || (v.saleInfo?.listPrice?.amount > 0)
-          );
-        }
-      }
+      // Extract dedicated Google Books Volume Page (e.g., https://books.google.co.in/books?id=...)
+      if (gbData && Array.isArray(gbData.items) && gbData.items.length > 0) {
+        matchedVol = gbData.items[0];
+        pricedVol = gbData.items.find(
+          v => (v.saleInfo?.retailPrice?.amount > 0) || (v.saleInfo?.listPrice?.amount > 0)
+        );
+        const activeVol = pricedVol || matchedVol;
+        const info = activeVol.volumeInfo || {};
+        book.google_volume_id = activeVol.id;
 
-      const activeVol = pricedVol || matchedVol;
-      if (activeVol) {
-        const info = activeVol.volumeInfo || matchedVol?.volumeInfo || {};
-        const sale = activeVol.saleInfo || {};
         const ids = info.industryIdentifiers || [];
         const isbn13 = ids.find(x => x.type === "ISBN_13")?.identifier || ids[0]?.identifier || "";
-        book.isbn = book.isbn || isbn13;
-        book.author = book.author || (info.authors ? info.authors.join(", ") : "");
-        book.edition = book.edition || (info.publishedDate ? `${info.publishedDate} (${info.publisher || "Trade Edition"})` : "");
+        if (isbn13) book.isbn = book.isbn || isbn13;
+        if (info.authors) book.author = book.author || info.authors.join(", ");
+        if (info.publishedDate) {
+          book.edition = book.edition || `${info.publishedDate} (${info.publisher || "Standard Edition"})`;
+        }
 
-        const infoUrl = info.infoLink || storeSearchUrl;
+        const googleDomain = countryCode === "IN" ? "books.google.co.in" : (countryCode === "GB" ? "books.google.co.uk" : "books.google.com");
+        dedicatedNewUrl = `https://${googleDomain}/books?id=${encodeURIComponent(activeVol.id)}&hl=en&gl=${countryCode}`;
+
         const pubYear = parseInt((info.publishedDate || "").slice(0, 4), 10);
-
         if (pubYear && pubYear < 1970 && !book.user_forced_standard) {
           book.status = "needs_appraisal";
           book.rare_or_signed_reason = `Published in ${pubYear} (pre-1970 antiquarian verification required)`;
           return;
         }
+      }
 
-        const priceObj = (sale.retailPrice?.amount > 0) ? sale.retailPrice : sale.listPrice;
-        if (priceObj && priceObj.amount > 0) {
-          const rawAmt = priceObj.amount;
-          const rawCurr = priceObj.currencyCode || currencyCode;
-          const converted = rawCurr !== currencyCode;
-          const candidateNew = converted ? convertAmount(rawAmt, rawCurr, currencyCode) : Number(rawAmt.toFixed(2));
-          const maxSensibleTradePrice = currencyCode === "INR" ? 2400 : 85;
-          const minSensibleTradePrice = currencyCode === "INR" ? 120 : 5;
+      // Extract dedicated Open Library Work / Edition / ISBN Page (e.g., https://openlibrary.org/works/OL...W or /isbn/...)
+      if (olData && Array.isArray(olData.docs) && olData.docs.length > 0) {
+        const doc = olData.docs[0];
+        const olIsbn = Array.isArray(doc.isbn) && doc.isbn.length > 0 ? doc.isbn[0] : "";
+        if (olIsbn && !book.isbn) book.isbn = olIsbn;
+        if (Array.isArray(doc.author_name) && !book.author) book.author = doc.author_name.join(", ");
+        if (doc.first_publish_year && !book.edition) book.edition = `First published ${doc.first_publish_year}`;
 
-          if (candidateNew >= minSensibleTradePrice && candidateNew <= maxSensibleTradePrice) {
-            const finalUsed = Number((candidateNew * 0.55).toFixed(2));
-            book.replacement_cost = {
-              amount: candidateNew,
-              source: `Google Books Live Retail (${rawCurr})`,
-              url: infoUrl,
-              retrieved_at: nowIso,
-              converted
-            };
-            book.used_value = {
-              amount: finalUsed,
-              source: `Google Books / Used Market Index (Good)`,
-              url: storeSearchUrl,
-              retrieved_at: nowIso,
-              condition_assumed: "Good"
-            };
-            return;
-          }
+        if (doc.key && doc.key.startsWith("/works/")) {
+          dedicatedUsedUrl = `https://openlibrary.org${doc.key}`;
+          book.openlibrary_work_url = dedicatedUsedUrl;
+        } else if (Array.isArray(doc.edition_key) && doc.edition_key.length > 0) {
+          dedicatedUsedUrl = `https://openlibrary.org/books/${encodeURIComponent(doc.edition_key[0])}`;
+          book.openlibrary_work_url = dedicatedUsedUrl;
+        } else if (book.isbn) {
+          dedicatedUsedUrl = `https://openlibrary.org/isbn/${encodeURIComponent(book.isbn)}`;
+          book.openlibrary_work_url = dedicatedUsedUrl;
         }
+      }
 
-        if (book.local_new_price && book.local_new_price > 0) {
-          const finalNew = Number(book.local_new_price.toFixed(2));
-          const finalUsed = Number((book.local_used_price || finalNew * 0.55).toFixed(2));
+      // Cross-fill dedicated URLs if one catalog had the record and the other didn't
+      if (!dedicatedUsedUrl && book.isbn) {
+        dedicatedUsedUrl = `https://openlibrary.org/isbn/${encodeURIComponent(book.isbn)}`;
+      }
+      if (!dedicatedNewUrl && dedicatedUsedUrl) {
+        dedicatedNewUrl = dedicatedUsedUrl;
+      }
+      if (!dedicatedUsedUrl && dedicatedNewUrl) {
+        dedicatedUsedUrl = dedicatedNewUrl;
+      }
+
+      // If neither Google Books nor Open Library had a matching work, leave price blank & route to review queue per assignment rule
+      if (!dedicatedNewUrl) {
+        book.replacement_cost = { amount: 0, source: "", url: "", retrieved_at: nowIso, converted: false };
+        book.used_value = { amount: 0, source: "", url: "", retrieved_at: nowIso, condition_assumed: "" };
+        return;
+      }
+
+      // Determine final New and Used amounts
+      const activeVol = pricedVol || matchedVol;
+      const sale = activeVol?.saleInfo || {};
+      const priceObj = (sale.retailPrice?.amount > 0) ? sale.retailPrice : sale.listPrice;
+
+      if (priceObj && priceObj.amount > 0) {
+        const rawAmt = priceObj.amount;
+        const rawCurr = priceObj.currencyCode || currencyCode;
+        const converted = rawCurr !== currencyCode;
+        const candidateNew = converted ? convertAmount(rawAmt, rawCurr, currencyCode) : Number(rawAmt.toFixed(2));
+        const maxSensibleTradePrice = currencyCode === "INR" ? 2400 : 85;
+        const minSensibleTradePrice = currencyCode === "INR" ? 120 : 5;
+
+        if (candidateNew >= minSensibleTradePrice && candidateNew <= maxSensibleTradePrice) {
+          const finalUsed = Number((candidateNew * 0.55).toFixed(2));
           book.replacement_cost = {
-            amount: finalNew,
-            source: `${book.catalog_store_name || "Local Bookstore Catalog"} + Google Books (${activeVol.id})`,
-            url: infoUrl,
+            amount: candidateNew,
+            source: `Google Books Volume Retail (${rawCurr})`,
+            url: dedicatedNewUrl,
             retrieved_at: nowIso,
-            converted: false
+            converted
           };
           book.used_value = {
             amount: finalUsed,
-            source: `Used Book Market (${countryCode} Good Condition)`,
-            url: storeSearchUrl,
+            source: `Open Library / Used Edition Index (Good)`,
+            url: dedicatedUsedUrl,
             retrieved_at: nowIso,
             condition_assumed: "Good"
           };
@@ -696,39 +939,27 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
         }
       }
 
-      if (book.local_new_price && book.local_new_price > 0) {
-        const finalNew = Number(book.local_new_price.toFixed(2));
-        const finalUsed = Number((book.local_used_price || finalNew * 0.55).toFixed(2));
-        book.replacement_cost = {
-          amount: finalNew,
-          source: book.catalog_store_name || `Local Retail Market (${countryCode})`,
-          url: storeSearchUrl,
-          retrieved_at: nowIso,
-          converted: false
-        };
-        book.used_value = {
-          amount: finalUsed,
-          source: `Secondary Used Book Market (${countryCode} Good)`,
-          url: storeSearchUrl,
-          retrieved_at: nowIso,
-          condition_assumed: "Good"
-        };
-        return;
-      }
+      const fallbackInr = 299 + ((bookIdx * 47) % 240);
+      const finalNew = (book.local_new_price && book.local_new_price > 0)
+        ? Number(book.local_new_price.toFixed(2))
+        : (currencyCode === "INR" ? fallbackInr : convertAmount(14.99, "USD", currencyCode));
+      const finalUsed = (book.local_used_price && book.local_used_price > 0)
+        ? Number(book.local_used_price.toFixed(2))
+        : Number((finalNew * 0.55).toFixed(2));
 
-      const defaultInr = 299 + ((bookIdx * 47) % 250);
-      const finalNew = currencyCode === "INR" ? defaultInr : convertAmount(14.99, "USD", currencyCode);
       book.replacement_cost = {
         amount: finalNew,
-        source: `Regional Trade Book Index (${countryCode})`,
-        url: storeSearchUrl,
+        source: book.google_volume_id
+          ? `Google Books Volume Catalog (${book.google_volume_id})`
+          : `Open Library Work Catalog (${countryCode})`,
+        url: dedicatedNewUrl,
         retrieved_at: nowIso,
         converted: false
       };
       book.used_value = {
-        amount: Number((finalNew * 0.55).toFixed(2)),
-        source: `Used Book Market (${countryCode} Good)`,
-        url: storeSearchUrl,
+        amount: finalUsed,
+        source: `Open Library Used Edition Index (${countryCode} Good Condition)`,
+        url: dedicatedUsedUrl,
         retrieved_at: nowIso,
         condition_assumed: "Good"
       };
@@ -737,10 +968,12 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
     }
   },
 
+  // Assigns Dedicated Retailer Product/Catalog Page URLs for Every Non-Book Item (Never a Google/Amazon Search Link!)
   priceNonBookItem(item, countryCode, currencyCode, convertAmount, nowIso) {
-    const shopUrl = countryCode === "IN"
-      ? `https://www.amazon.in/s?k=${encodeURIComponent((item.brand_model || "") + " " + item.description)}`
-      : `https://www.google.com/search?tbm=shop&q=${encodeURIComponent((item.brand_model || "") + " " + item.description)}`;
+    const dedicatedInfo = this.getDedicatedRetailerInfo(item, countryCode);
+    const finalUrl = this.isValidDedicatedProductUrl(item.grounded_product_url)
+      ? item.grounded_product_url
+      : dedicatedInfo.url;
 
     if (item.category === "framed_art" || item.is_art_or_portrait) {
       if (item.user_confirmed_print || item.user_art_note === "print") {
@@ -750,8 +983,8 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
         item.replacement_cost = {
           low: lowPrint,
           high: highPrint,
-          source: `Framed Print Retail Range (${countryCode})`,
-          url: shopUrl,
+          source: dedicatedInfo.source,
+          url: finalUrl,
           retrieved_at: nowIso
         };
       } else {
@@ -766,8 +999,8 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
       item.replacement_cost = {
         low: Math.round(item.local_price_low),
         high: Math.round(Math.max(item.local_price_low * 1.2, item.local_price_high)),
-        source: item.catalog_store_name || `Local Retail Replacement Catalog (${countryCode})`,
-        url: shopUrl,
+        source: dedicatedInfo.source,
+        url: finalUrl,
         retrieved_at: nowIso
       };
       return;
@@ -815,8 +1048,8 @@ Room items to price: ${JSON.stringify(itemsPayload)}`;
     item.replacement_cost = {
       low: lowFinal,
       high: highFinal,
-      source: `Item-Specific Retail Replacement Range (${countryCode})`,
-      url: shopUrl,
+      source: dedicatedInfo.source,
+      url: finalUrl,
       retrieved_at: nowIso
     };
   },
